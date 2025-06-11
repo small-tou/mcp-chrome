@@ -47,14 +47,26 @@ function configureOrtEnv(numThreads = 1, executionProviders = ['wasm']) {
   }
 }
 
-async function initializeModel(modelPath, numThreads, executionProviders) {
+async function initializeModel(modelPathOrData, numThreads, executionProviders) {
   try {
     configureOrtEnv(numThreads, executionProviders); // 确保环境已配置
-    if (!modelPath) {
-      throw new Error('Worker: Model path is not provided.');
+
+    if (!modelPathOrData) {
+      throw new Error('Worker: Model path or data is not provided.');
     }
-    modelPathInternal = modelPath; // 存储模型路径以备调试或重载（如果需要）
-    session = await ort.InferenceSession.create(modelPathInternal, sessionOptions);
+
+    // Check if input is ArrayBuffer (cached model data) or string (URL path)
+    if (modelPathOrData instanceof ArrayBuffer) {
+      console.log(
+        `Worker: Initializing model from cached ArrayBuffer (${modelPathOrData.byteLength} bytes)`,
+      );
+      session = await ort.InferenceSession.create(modelPathOrData, sessionOptions);
+      modelPathInternal = '[Cached ArrayBuffer]'; // For debugging purposes
+    } else {
+      console.log(`Worker: Initializing model from URL: ${modelPathOrData}`);
+      modelPathInternal = modelPathOrData; // 存储模型路径以备调试或重载（如果需要）
+      session = await ort.InferenceSession.create(modelPathInternal, sessionOptions);
+    }
 
     // 获取模型的输入名称，用于判断是否需要token_type_ids
     modelInputNames = session.inputNames;
@@ -63,11 +75,11 @@ async function initializeModel(modelPath, numThreads, executionProviders) {
 
     return { status: 'success', message: 'Model initialized' };
   } catch (error) {
-    console.error(`Worker: Model initialization failed for ${modelPath}:`, error);
+    console.error(`Worker: Model initialization failed:`, error);
     session = null; // 清理session以防部分初始化
     modelInputNames = null;
     // 将错误信息序列化，因为Error对象本身可能无法直接postMessage
-    throw new Error(`Worker: Model initialization failed - ${error.message} (Model: ${modelPath})`);
+    throw new Error(`Worker: Model initialization failed - ${error.message}`);
   }
 }
 
@@ -291,7 +303,9 @@ self.onmessage = async (event) => {
   try {
     switch (type) {
       case 'init':
-        await initializeModel(payload.modelPath, payload.numThreads, payload.executionProviders);
+        // Support both modelPath (URL string) and modelData (ArrayBuffer)
+        const modelInput = payload.modelData || payload.modelPath;
+        await initializeModel(modelInput, payload.numThreads, payload.executionProviders);
         self.postMessage({ id, type: 'init_complete', status: 'success' });
         break;
       case 'infer':

@@ -200,6 +200,11 @@
           :showSpinner="true"
         />
 
+        <button class="secondary-button" :disabled="isManagingCache" @click="showCacheStats">
+          <DatabaseIcon />
+          <span>{{ isManagingCache ? '处理中...' : '缓存管理' }}</span>
+        </button>
+
         <button
           class="danger-button"
           :disabled="isClearingData"
@@ -213,6 +218,57 @@
 
     <div class="footer">
       <p class="footer-text">chrome mcp server for ai</p>
+    </div>
+
+    <!-- Cache Management Dialog -->
+    <div v-if="showCacheManagement" class="modal-overlay" @click="hideCacheManagement">
+      <div class="modal-content" @click.stop>
+        <div class="modal-header">
+          <h3>模型缓存管理</h3>
+          <button class="close-button" @click="hideCacheManagement">×</button>
+        </div>
+
+        <div class="modal-body">
+          <div v-if="cacheStats" class="cache-stats">
+            <div class="stats-summary">
+              <p><strong>总缓存大小:</strong> {{ cacheStats.totalSizeMB }} MB</p>
+              <p><strong>缓存条目:</strong> {{ cacheStats.entryCount }} 个</p>
+            </div>
+
+            <div v-if="cacheStats.entries.length > 0" class="cache-entries">
+              <h4>缓存详情:</h4>
+              <div v-for="entry in cacheStats.entries" :key="entry.url" class="cache-entry">
+                <div class="entry-info">
+                  <div class="entry-url">{{ getModelNameFromUrl(entry.url) }}</div>
+                  <div class="entry-details">
+                    <span class="entry-size">{{ entry.sizeMB }} MB</span>
+                    <span class="entry-age">{{ entry.age }}</span>
+                    <span v-if="entry.expired" class="entry-expired">已过期</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-else class="no-cache">
+              <p>暂无缓存数据</p>
+            </div>
+          </div>
+
+          <div v-else class="loading-cache">
+            <p>正在加载缓存信息...</p>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="secondary-button" :disabled="isManagingCache" @click="cleanupCache">
+            {{ isManagingCache ? '清理中...' : '清理过期缓存' }}
+          </button>
+          <button class="danger-button" :disabled="isManagingCache" @click="clearAllCache">
+            {{ isManagingCache ? '清空中...' : '清空所有缓存' }}
+          </button>
+          <button class="primary-button" @click="hideCacheManagement">关闭</button>
+        </div>
+      </div>
     </div>
 
     <ConfirmDialog
@@ -238,6 +294,9 @@ import {
   PREDEFINED_MODELS,
   type ModelPreset,
   getModelInfo,
+  getCacheStats,
+  clearModelCache,
+  cleanupModelCache,
 } from '@/utils/semantic-similarity-engine';
 import { BACKGROUND_MESSAGE_TYPES } from '@/common/message-types';
 
@@ -315,6 +374,23 @@ const semanticEngineStatus = ref<'idle' | 'initializing' | 'ready' | 'error'>('i
 const isSemanticEngineInitializing = ref(false);
 const semanticEngineInitProgress = ref('');
 const semanticEngineLastUpdated = ref<number | null>(null);
+
+// Cache management
+const showCacheManagement = ref(false);
+const isManagingCache = ref(false);
+const cacheStats = ref<{
+  totalSize: number;
+  totalSizeMB: number;
+  entryCount: number;
+  entries: Array<{
+    url: string;
+    size: number;
+    sizeMB: number;
+    timestamp: number;
+    age: string;
+    expired: boolean;
+  }>;
+} | null>(null);
 
 const availableModels = computed(() => {
   return Object.entries(PREDEFINED_MODELS).map(([key, value]) => ({
@@ -445,6 +521,61 @@ const getSemanticEngineButtonText = () => {
     case 'idle':
     default:
       return '初始化语义引擎';
+  }
+};
+
+const getModelNameFromUrl = (url: string) => {
+  // Extract model name from HuggingFace URL
+  const match = url.match(/huggingface\.co\/([^\/]+\/[^\/]+)/);
+  if (match) {
+    return match[1];
+  }
+  return url.split('/').pop() || url;
+};
+
+const showCacheStats = async () => {
+  showCacheManagement.value = true;
+  cacheStats.value = null;
+
+  try {
+    cacheStats.value = await getCacheStats();
+  } catch (error) {
+    console.error('Failed to get cache stats:', error);
+  }
+};
+
+const hideCacheManagement = () => {
+  showCacheManagement.value = false;
+  cacheStats.value = null;
+};
+
+const cleanupCache = async () => {
+  if (isManagingCache.value) return;
+
+  isManagingCache.value = true;
+  try {
+    await cleanupModelCache();
+    // Refresh cache stats
+    cacheStats.value = await getCacheStats();
+  } catch (error) {
+    console.error('Failed to cleanup cache:', error);
+  } finally {
+    isManagingCache.value = false;
+  }
+};
+
+const clearAllCache = async () => {
+  if (isManagingCache.value) return;
+
+  isManagingCache.value = true;
+  try {
+    await clearModelCache();
+    // Refresh cache stats
+    cacheStats.value = await getCacheStats();
+  } catch (error) {
+    console.error('Failed to clear cache:', error);
+  } finally {
+    isManagingCache.value = false;
   }
 };
 
@@ -1293,6 +1424,195 @@ onUnmounted(() => {
 
 .section {
   margin-bottom: 24px;
+}
+
+/* Modal styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  max-width: 500px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #64748b;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.close-button:hover {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex-grow: 1;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 12px;
+  padding: 20px;
+  border-top: 1px solid #e2e8f0;
+  justify-content: flex-end;
+}
+
+.cache-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.stats-summary {
+  background: #f8fafc;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.stats-summary p {
+  margin: 4px 0;
+  color: #475569;
+}
+
+.cache-entries h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.cache-entry {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.entry-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.entry-url {
+  font-weight: 500;
+  color: #1f2937;
+  font-size: 14px;
+}
+
+.entry-details {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.entry-size {
+  background: #dbeafe;
+  color: #1e40af;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.entry-age {
+  color: #6b7280;
+}
+
+.entry-expired {
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.no-cache,
+.loading-cache {
+  text-align: center;
+  color: #6b7280;
+  padding: 20px;
+}
+
+.secondary-button {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.secondary-button:hover:not(:disabled) {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+}
+
+.secondary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.primary-button {
+  background: #3b82f6;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.primary-button:hover {
+  background: #2563eb;
 }
 
 .section-title {
