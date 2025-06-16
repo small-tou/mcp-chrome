@@ -145,10 +145,14 @@ Complete tool list: [Complete Tool List](docs/TOOLS.md)
 prompt: [excalidraw-prompt](prompt/excalidraw-prompt.md)
 Instruction: Help me summarize the current page content, then draw a diagram to aid my understanding.
 
+https://github.com/user-attachments/assets/fd17209b-303d-48db-9e5e-3717141df183
+
 ### AI automatically injects scripts and modifies webpage styles
 
 prompt: [modify-web-prompt](prompt/modify-web.md)
 Instruction: Help me modify the current page's style and remove advertisements.
+
+https://github.com/user-attachments/assets/69cb561c-2e1e-4665-9411-4a3185f9643e
 
 ### AI automatically captures network requests for you
 
