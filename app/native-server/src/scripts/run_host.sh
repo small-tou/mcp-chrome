@@ -138,4 +138,4 @@ fi
     echo "Executing: ${NODE_EXEC} ${NODE_SCRIPT}"
 } >> "${WRAPPER_LOG}"
 
-exec "${NODE_EXEC}" "${NODE_SCRIPT}" >> "${WRAPPER_LOG}" 2>> "${STDERR_LOG}"
+exec "${NODE_EXEC}" "${NODE_SCRIPT}" 2>> "${STDERR_LOG}"
