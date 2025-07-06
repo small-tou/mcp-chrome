@@ -28,15 +28,19 @@ const handleToolCall = async (name: string, args: any): Promise<CallToolResult> 
       NativeMessageType.CALL_TOOL,
       30000, // 30秒超时
     );
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response),
-        },
-      ],
-      isError: false,
-    };
+    if (response.status === 'success') {
+      return response.data;
+    } else {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Error calling tool: ${response.error}`,
+          },
+        ],
+        isError: true,
+      };
+    }
   } catch (error: any) {
     return {
       content: [
