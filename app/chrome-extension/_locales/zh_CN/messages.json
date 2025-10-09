@@ -481,5 +481,12 @@
   "tableHeaderWorld": { "message": "执行上下文", "description": "表头-World" },
   "tableHeaderRunAt": { "message": "运行时机", "description": "表头-RunAt" },
   "tableHeaderUpdated": { "message": "更新时间", "description": "表头-更新时间" },
-  "deleteButton": { "message": "删除", "description": "删除按钮" }
+  "deleteButton": { "message": "删除", "description": "删除按钮" },
+  "placeholderOptional": { "message": "可选", "description": "通用可选占位符" },
+  "placeholderMatchesExample": {
+    "message": "例如：https://*.example.com/*",
+    "description": "匹配示例占位符"
+  },
+  "placeholderScriptHint": { "message": "在此粘贴 JS/CSS/TM", "description": "脚本文本域占位符" },
+  "placeholderDomainHint": { "message": "example.com", "description": "域名筛选占位符" }
 }

@@ -15,7 +15,7 @@
       <div class="grid">
         <label>
           {{ m('nameLabel') }}
-          <input v-model="form.name" placeholder="optional" />
+          <input v-model="form.name" :placeholder="m('placeholderOptional')" />
         </label>
         <label>
           {{ m('runAtLabel') }}
@@ -58,19 +58,19 @@
       </div>
       <label>
         {{ m('matchesInputLabel') }}
-        <input v-model="form.matches" placeholder="e.g. https://*.example.com/*" />
+        <input v-model="form.matches" :placeholder="m('placeholderMatchesExample')" />
       </label>
       <label>
         {{ m('excludesInputLabel') }}
-        <input v-model="form.excludes" placeholder="optional" />
+        <input v-model="form.excludes" :placeholder="m('placeholderOptional')" />
       </label>
       <label>
         {{ m('tagsInputLabel') }}
-        <input v-model="form.tags" placeholder="optional" />
+        <input v-model="form.tags" :placeholder="m('placeholderOptional')" />
       </label>
       <label>
         {{ m('scriptLabel') }}
-        <textarea v-model="form.script" placeholder="Paste JS/CSS/TM here" rows="8" />
+        <textarea v-model="form.script" :placeholder="m('placeholderScriptHint')" rows="8" />
       </label>
       <div class="row">
         <button :disabled="submitting" @click="apply('auto')">{{ m('applyButton') }}</button>
@@ -96,7 +96,11 @@
         </label>
         <label>
           {{ m('domainLabel') }}
-          <input v-model="filters.domain" @input="reload()" placeholder="example.com" />
+          <input
+            v-model="filters.domain"
+            @input="reload()"
+            :placeholder="m('placeholderDomainHint')"
+          />
         </label>
       </div>
       <div class="row">
