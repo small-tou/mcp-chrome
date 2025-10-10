@@ -1,6 +1,6 @@
 import { TOOL_NAMES } from 'chrome-mcp-shared';
 import { handleCallTool } from '../tools';
-import {
+import type {
   Flow,
   RunLogEntry,
   RunRecord,
@@ -13,6 +13,8 @@ import {
   StepDrag,
   StepWait,
   StepScript,
+  NodeBase as DagNode,
+  Edge as DagEdge,
 } from './types';
 import { appendRun } from './flow-store';
 import { locateElement } from './selector-engine';
@@ -27,6 +29,7 @@ export interface RunOptions {
   timeoutMs?: number;
   startUrl?: string;
   args?: Record<string, any>;
+  startNodeId?: string; // start executing from this node/step id if present
 }
 
 export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<RunResult> {
@@ -39,12 +42,52 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
   }
   if (options.args) Object.assign(vars, options.args);
 
-  // prepare tab & binding check
-  if (options.startUrl) {
-    await handleCallTool({ name: TOOL_NAMES.BROWSER.NAVIGATE, args: { url: options.startUrl } });
-  }
-  if (options.refresh) {
-    await handleCallTool({ name: TOOL_NAMES.BROWSER.NAVIGATE, args: { refresh: true } });
+  // Helper: ensure target tab according to tabTarget/startUrl, and optionally refresh
+  const ensureTab = async () => {
+    const target = options.tabTarget || 'current';
+    const startUrl = options.startUrl;
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (target === 'new') {
+      let urlToOpen = startUrl;
+      if (!urlToOpen) {
+        // duplicate current active tab's URL when startUrl not provided
+        urlToOpen = active?.url || 'about:blank';
+      }
+      const created = await chrome.tabs.create({ url: urlToOpen, active: true });
+      // Best-effort wait for loading to begin and settle a bit
+      await new Promise((r) => setTimeout(r, 500));
+    } else {
+      // current tab target
+      if (startUrl) {
+        await handleCallTool({ name: TOOL_NAMES.BROWSER.NAVIGATE, args: { url: startUrl } });
+      } else if (options.refresh) {
+        await handleCallTool({ name: TOOL_NAMES.BROWSER.NAVIGATE, args: { refresh: true } });
+      }
+    }
+  };
+  await ensureTab();
+
+  // helper to apply assign mapping: { varName: 'a.b[0].c' }
+  function applyAssign(target: Record<string, any>, source: any, assign: Record<string, string>) {
+    const getByPath = (obj: any, path: string) => {
+      try {
+        const parts = path
+          .replace(/\[(\d+)\]/g, '.$1')
+          .split('.')
+          .filter(Boolean);
+        let cur = obj;
+        for (const p of parts) {
+          if (cur == null) return undefined;
+          cur = cur[p as any];
+        }
+        return cur;
+      } catch {
+        return undefined;
+      }
+    };
+    for (const [k, v] of Object.entries(assign || {})) {
+      target[k] = getByPath(source, String(v));
+    }
   }
 
   // Ensure helper scripts are present for overlay/collectVariables
@@ -64,7 +107,10 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
     if (needed.length > 0) {
       const res = await handleCallTool({
         name: TOOL_NAMES.BROWSER.SEND_COMMAND_TO_INJECT_SCRIPT,
-        args: { eventName: 'collectVariables', payload: undefined },
+        args: {
+          eventName: 'collectVariables',
+          payload: JSON.stringify({ variables: needed, useOverlay: true }),
+        },
       });
       // Fallback: if direct collectVariables without payload not supported, call with explicit variables
       let values: Record<string, any> | null = null;
@@ -84,6 +130,7 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
             return await chrome.tabs.sendMessage(tabId, {
               action: 'collectVariables',
               variables: needed,
+              useOverlay: true,
             } as any);
           });
         if (res2 && res2.success && res2.values) values = res2.values;
@@ -234,9 +281,32 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
     }
   }
 
+  // If DAG present, linearize to steps for M1 (default edges, topo order)
+  const stepsToRun: Step[] = (() => {
+    try {
+      if (Array.isArray((flow as any).nodes) && (flow as any).nodes.length > 0) {
+        const nodes = ((flow as any).nodes || []) as DagNode[];
+        const edges = (((flow as any).edges || []) as DagEdge[]).filter(
+          (e) => !e.label || e.label === 'default',
+        );
+        const order = topoOrder(nodes, edges);
+        return order.map((n) => mapDagNodeToStep(n));
+      }
+    } catch {
+      // ignore and fallback
+    }
+    return flow.steps || [];
+  })();
+
+  // If a startNodeId is provided, slice the plan to start from that node/step id
+  const startIdx = options.startNodeId
+    ? stepsToRun.findIndex((s) => s?.id === options.startNodeId)
+    : -1;
+  const steps = startIdx >= 0 ? stepsToRun.slice(startIdx) : stepsToRun.slice();
+
   try {
     const pendingAfterScripts: StepScript[] = [];
-    for (const step of flow.steps) {
+    for (const step of steps) {
       const t0 = Date.now();
       const maxRetries = Math.max(0, step.retry?.count ?? 0);
       const baseInterval = Math.max(0, step.retry?.intervalMs ?? 0);
@@ -266,7 +336,138 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
           }
 
           let stepLogged = false;
+          // Helper get current active tab URL and status
+          const getActiveTabInfo = async () => {
+            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+            const tab = tabs[0];
+            return { url: tab?.url || '', status: (tab as any)?.status || '' };
+          };
+          // Wait for navigation completion or readiness
+          const waitForNavigation = async (prevUrl: string, timeoutMs: number) => {
+            const deadline = Date.now() + Math.max(1000, Math.min(timeoutMs || 15000, 30000));
+            let sawLoading = false;
+            while (Date.now() < deadline) {
+              const { url, status } = await getActiveTabInfo();
+              if (url && url !== prevUrl) return true;
+              if (status === 'loading') sawLoading = true;
+              if (sawLoading && status === 'complete') return true;
+              await new Promise((r) => setTimeout(r, 200));
+            }
+            // as a last attempt, try a brief network idle wait
+            try {
+              await waitForNetworkIdle(2000, 800);
+              return true;
+            } catch (e) {
+              // noop
+              void 0;
+            }
+            throw new Error('navigation timeout');
+          };
+
           switch (step.type) {
+            case 'http': {
+              const s = step as any;
+              const res = await handleCallTool({
+                name: TOOL_NAMES.BROWSER.NETWORK_REQUEST,
+                args: {
+                  url: s.url,
+                  method: s.method || 'GET',
+                  headers: s.headers || {},
+                  body: s.body,
+                },
+              });
+              const text = (res as any)?.content?.find((c: any) => c.type === 'text')?.text;
+              try {
+                const payload = text ? JSON.parse(text) : null;
+                if (s.saveAs && payload !== undefined) vars[s.saveAs] = payload;
+                if (s.assign && payload !== undefined) applyAssign(vars, payload, s.assign);
+              } catch {
+                // ignore parse error
+              }
+              break;
+            }
+            case 'extract': {
+              const s = step as any;
+              const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+              const tabId = tabs?.[0]?.id;
+              if (typeof tabId !== 'number') throw new Error('Active tab not found');
+              let value: any = null;
+              if (s.js && String(s.js).trim()) {
+                const [{ result }] = await chrome.scripting.executeScript({
+                  target: { tabId },
+                  func: (code: string) => {
+                    try {
+                      return (0, eval)(code);
+                    } catch (e) {
+                      return null;
+                    }
+                  },
+                  args: [String(s.js)],
+                } as any);
+                value = result;
+              } else if (s.selector) {
+                const attr = String(s.attr || 'text');
+                const sel = String(s.selector);
+                const [{ result }] = await chrome.scripting.executeScript({
+                  target: { tabId },
+                  func: (selector: string, attr: string) => {
+                    try {
+                      const el = document.querySelector(selector) as any;
+                      if (!el) return null;
+                      if (attr === 'text' || attr === 'textContent')
+                        return (el.textContent || '').trim();
+                      return el.getAttribute ? el.getAttribute(attr) : null;
+                    } catch {
+                      return null;
+                    }
+                  },
+                  args: [sel, attr],
+                } as any);
+                value = result;
+              }
+              if (s.saveAs) vars[s.saveAs] = value;
+              break;
+            }
+            case 'openTab': {
+              const s = step as any;
+              if (s.newWindow) {
+                await chrome.windows.create({ url: s.url || undefined, focused: true });
+              } else {
+                await chrome.tabs.create({ url: s.url || undefined, active: true });
+              }
+              break;
+            }
+            case 'switchTab': {
+              const s = step as any;
+              let targetTabId: number | undefined = s.tabId;
+              if (!targetTabId) {
+                const tabs = await chrome.tabs.query({});
+                const hit = tabs.find(
+                  (t) =>
+                    (s.urlContains && (t.url || '').includes(String(s.urlContains))) ||
+                    (s.titleContains && (t.title || '').includes(String(s.titleContains))),
+                );
+                targetTabId = (hit && hit.id) as number | undefined;
+              }
+              if (targetTabId) {
+                await handleCallTool({
+                  name: TOOL_NAMES.BROWSER.SWITCH_TAB,
+                  args: { tabId: targetTabId },
+                });
+              } else {
+                throw new Error('switchTab: no matching tab');
+              }
+              break;
+            }
+            case 'closeTab': {
+              const s = step as any;
+              const args: any = {};
+              if (Array.isArray(s.tabIds) && s.tabIds.length) args.tabIds = s.tabIds;
+              if (s.url) args.url = s.url;
+              const res = await handleCallTool({ name: TOOL_NAMES.BROWSER.CLOSE_TABS, args });
+              if ((res as any).isError) throw new Error('closeTab failed');
+              break;
+            }
             case 'scroll': {
               const s = step as StepScroll;
               const top = s.offset?.y ?? undefined;
@@ -390,20 +591,34 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
               } catch {
                 /* ignore */
               }
-              const res = await handleCallTool({
-                name: TOOL_NAMES.BROWSER.CLICK,
-                args: {
-                  ref: located?.ref || (step as any).target?.ref,
-                  selector: !located?.ref
-                    ? (step as any).target?.candidates?.find(
-                        (c: any) => c.type === 'css' || c.type === 'attr',
-                      )?.value
-                    : undefined,
-                  waitForNavigation: (step as any).after?.waitForNavigation || false,
-                  timeout: Math.max(1000, Math.min(step.timeoutMs || 10000, 30000)),
-                },
-              });
+              const prevInfo = await getActiveTabInfo();
+              let res: any;
+              if (step.type === 'dblclick') {
+                // Use precise CDP-based double click for robustness
+                res = await handleCallTool({
+                  name: TOOL_NAMES.BROWSER.COMPUTER,
+                  args: { action: 'double_click', ref: located?.ref || (step as any).target?.ref },
+                });
+              } else {
+                res = await handleCallTool({
+                  name: TOOL_NAMES.BROWSER.CLICK,
+                  args: {
+                    ref: located?.ref || (step as any).target?.ref,
+                    selector: !located?.ref
+                      ? (step as any).target?.candidates?.find(
+                          (c: any) => c.type === 'css' || c.type === 'attr',
+                        )?.value
+                      : undefined,
+                    waitForNavigation: false, // we handle navigation explicitly below
+                    timeout: Math.max(1000, Math.min(step.timeoutMs || 10000, 30000)),
+                  },
+                });
+              }
               if ((res as any).isError) throw new Error('click failed');
+              // If navigation requested, wait explicitly with retries handled by outer loop
+              if ((step as any).after?.waitForNavigation) {
+                await waitForNavigation(prevInfo.url, Math.max(step.timeoutMs || 15000, 3000));
+              }
               if (fallbackUsed) {
                 logs.push({
                   stepId: step.id,
@@ -521,16 +736,32 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
             case 'wait': {
               const s = step as StepWait;
               if ('text' in s.condition) {
-                const res = await handleCallTool({
-                  name: TOOL_NAMES.BROWSER.COMPUTER,
-                  args: {
-                    action: 'wait',
-                    text: s.condition.text,
-                    appear: s.condition.appear !== false,
-                    timeout: Math.max(0, Math.min(step.timeoutMs || 10000, 120000)),
-                  },
-                });
-                if ((res as any).isError) throw new Error('wait text failed');
+                // Use wait-helper for text appearance/disappearance for more robustness
+                try {
+                  await handleCallTool({
+                    name: TOOL_NAMES.BROWSER.INJECT_SCRIPT,
+                    args: { type: 'ISOLATED', jsScript: '' },
+                  });
+                } catch (e) {
+                  // noop
+                  void 0;
+                }
+                const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+                const tabId = tabs?.[0]?.id;
+                if (typeof tabId !== 'number') throw new Error('Active tab not found');
+                // Ensure wait-helper is present
+                await chrome.scripting.executeScript({
+                  target: { tabId },
+                  files: ['inject-scripts/wait-helper.js'],
+                  world: 'ISOLATED',
+                } as any);
+                const resp = await chrome.tabs.sendMessage(tabId, {
+                  action: 'waitForText',
+                  text: s.condition.text,
+                  appear: s.condition.appear !== false,
+                  timeout: Math.max(0, Math.min(step.timeoutMs || 10000, 120000)),
+                } as any);
+                if (!resp || resp.success !== true) throw new Error('wait text failed');
               } else if ('networkIdle' in s.condition) {
                 const total = Math.min(Math.max(1000, step.timeoutMs || 5000), 120000);
                 const idle = Math.min(1500, Math.max(500, Math.floor(total / 3)));
@@ -540,17 +771,22 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
                 const delay = Math.min(step.timeoutMs || 5000, 20000);
                 await new Promise((r) => setTimeout(r, delay));
               } else if ('selector' in s.condition) {
-                // best-effort: simple text wait with selector string as text
-                const res = await handleCallTool({
-                  name: TOOL_NAMES.BROWSER.COMPUTER,
-                  args: {
-                    action: 'wait',
-                    text: s.condition.selector,
-                    appear: s.condition.visible !== false,
-                    timeout: Math.max(0, Math.min(step.timeoutMs || 10000, 120000)),
-                  },
-                });
-                if ((res as any).isError) throw new Error('wait selector failed');
+                // Use wait-helper to wait for selector visibility
+                const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+                const tabId = tabs?.[0]?.id;
+                if (typeof tabId !== 'number') throw new Error('Active tab not found');
+                await chrome.scripting.executeScript({
+                  target: { tabId },
+                  files: ['inject-scripts/wait-helper.js'],
+                  world: 'ISOLATED',
+                } as any);
+                const resp = await chrome.tabs.sendMessage(tabId, {
+                  action: 'waitForSelector',
+                  selector: (s.condition as any).selector,
+                  visible: (s.condition as any).visible !== false,
+                  timeout: Math.max(0, Math.min(step.timeoutMs || 10000, 120000)),
+                } as any);
+                if (!resp || resp.success !== true) throw new Error('wait selector failed');
               }
               break;
             }
@@ -709,15 +945,28 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
               break;
             }
             case 'script': {
-              const world = (step as any).world || 'ISOLATED';
-              const code = String((step as any).code || '');
+              const s = step as any;
+              const world = s.world || 'ISOLATED';
+              const code = String(s.code || '');
               if (!code.trim()) break;
-              const wrapped = `(() => { try { ${code} } catch (e) { console.error('flow script error:', e); } })();`;
-              const res = await handleCallTool({
-                name: TOOL_NAMES.BROWSER.INJECT_SCRIPT,
-                args: { type: world, jsScript: wrapped },
-              });
-              if ((res as any).isError) throw new Error('script execution failed');
+              // Prefer executeScript to capture return value for saveAs/assign
+              const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+              const tabId = tabs?.[0]?.id;
+              if (typeof tabId !== 'number') throw new Error('Active tab not found');
+              const [{ result }] = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: (userCode: string) => {
+                  try {
+                    return (0, eval)(userCode);
+                  } catch (e) {
+                    return null;
+                  }
+                },
+                args: [code],
+                world: world as any,
+              } as any);
+              if (s.saveAs) vars[s.saveAs] = result;
+              if (s.assign && typeof s.assign === 'object') applyAssign(vars, result, s.assign);
               break;
             }
             case 'navigate': {
@@ -757,12 +1006,24 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
               const world = (s as any).world || 'ISOLATED';
               const code = String((s as any).code || '');
               if (code.trim()) {
-                const wrapped = `(() => { try { ${code} } catch (e) { console.error('flow script error:', e); } })();`;
-                const res = await handleCallTool({
-                  name: TOOL_NAMES.BROWSER.INJECT_SCRIPT,
-                  args: { type: world, jsScript: wrapped },
-                });
-                if ((res as any).isError) throw new Error('script(after) execution failed');
+                const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+                const tabId = tabs?.[0]?.id;
+                if (typeof tabId !== 'number') throw new Error('Active tab not found');
+                const [{ result }] = await chrome.scripting.executeScript({
+                  target: { tabId },
+                  func: (userCode: string) => {
+                    try {
+                      return (0, eval)(userCode);
+                    } catch {
+                      return null;
+                    }
+                  },
+                  args: [code],
+                  world: world as any,
+                } as any);
+                if ((s as any).saveAs) vars[(s as any).saveAs] = result;
+                if ((s as any).assign && typeof (s as any).assign === 'object')
+                  applyAssign(vars, result, (s as any).assign);
               }
               logs.push({ stepId: s.id, status: 'success', tookMs: Date.now() - tScript });
             }
@@ -859,8 +1120,8 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
     runId,
     success: failed === 0,
     summary: {
-      total: flow.steps.length,
-      success: flow.steps.length - failed,
+      total: steps.length,
+      success: steps.length - failed,
       failed,
       tookMs,
     },
@@ -869,4 +1130,74 @@ export async function runFlow(flow: Flow, options: RunOptions = {}): Promise<Run
     logs: options.returnLogs ? logs : undefined,
     screenshots: { onFailure: logs.find((l) => l.status === 'failed')?.screenshotBase64 },
   };
+}
+
+// --- DAG helpers (M1: default-edge serial) ---
+function topoOrder(nodes: DagNode[], edges: DagEdge[]): DagNode[] {
+  const id2n = new Map(nodes.map((n) => [n.id, n] as const));
+  const indeg = new Map<string, number>(nodes.map((n) => [n.id, 0] as const));
+  for (const e of edges) indeg.set(e.to, (indeg.get(e.to) || 0) + 1);
+  const nexts = new Map<string, string[]>(nodes.map((n) => [n.id, [] as string[]] as const));
+  for (const e of edges) nexts.get(e.from)!.push(e.to);
+  const q: string[] = nodes.filter((n) => (indeg.get(n.id) || 0) === 0).map((n) => n.id);
+  const out: DagNode[] = [];
+  while (q.length) {
+    const id = q.shift()!;
+    const n = id2n.get(id);
+    if (!n) continue;
+    out.push(n);
+    for (const v of nexts.get(id)!) {
+      indeg.set(v, (indeg.get(v) || 0) - 1);
+      if ((indeg.get(v) || 0) === 0) q.push(v);
+    }
+  }
+  return out.length === nodes.length ? out : nodes.slice();
+}
+
+function mapDagNodeToStep(n: DagNode): Step {
+  const c: any = n.config || {};
+  const base = { id: n.id } as any;
+  if (n.type === 'click' || n.type === 'dblclick')
+    return {
+      ...base,
+      type: n.type,
+      target: c.target || { candidates: [] },
+      before: c.before,
+      after: c.after,
+    } as any;
+  if (n.type === 'fill')
+    return {
+      ...base,
+      type: 'fill',
+      target: c.target || { candidates: [] },
+      value: c.value || '',
+    } as any;
+  if (n.type === 'key') return { ...base, type: 'key', keys: c.keys || '' } as any;
+  if (n.type === 'wait')
+    return { ...base, type: 'wait', condition: c.condition || { text: '', appear: true } } as any;
+  if (n.type === 'assert')
+    return {
+      ...base,
+      type: 'assert',
+      assert: c.assert || { exists: '' },
+      failStrategy: c.failStrategy,
+    } as any;
+  if (n.type === 'navigate') return { ...base, type: 'navigate', url: c.url || '' } as any;
+  if (n.type === 'script')
+    return {
+      ...base,
+      type: 'script',
+      world: c.world || 'ISOLATED',
+      code: c.code || '',
+      when: c.when,
+    } as any;
+  if (n.type === 'delay')
+    return {
+      ...base,
+      type: 'wait',
+      timeoutMs: Math.max(0, Number(c.ms ?? 1000)),
+      condition: { navigation: true },
+    } as any;
+  // Fallback: no-op script
+  return { ...base, type: 'script', world: 'ISOLATED', code: '' } as any;
 }

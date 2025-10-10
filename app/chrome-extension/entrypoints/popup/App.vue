@@ -252,7 +252,10 @@
               </div>
               <div class="rr-actions">
                 <button class="semantic-engine-button" @click="runFlow(f.id)">回放</button>
+                <button class="semantic-engine-button" @click="editFlow(f)">表单编辑</button>
+                <button class="semantic-engine-button" @click="openBuilder(f)">画布编辑</button>
                 <button class="semantic-engine-button" @click="publishFlow(f.id)">发布</button>
+                <button class="semantic-engine-button" @click="openSchedule(f.id)">定时</button>
                 <button class="danger-button" @click="deleteFlow(f.id)">删除</button>
               </div>
             </div>
@@ -291,6 +294,27 @@
       @confirm="confirmClearAllData"
       @cancel="hideClearDataConfirmation"
     />
+
+    <FlowEditor
+      :visible="showFlowEditor"
+      :flow="editingFlow"
+      @close="showFlowEditor = false"
+      @save="saveEditedFlow"
+    />
+    <BuilderEditor
+      :visible="showBuilderEditor"
+      :flow="editingFlowBuilder"
+      @close="showBuilderEditor = false"
+      @save="saveEditedFlowFromBuilder"
+    />
+    <ScheduleDialog
+      :visible="showSchedule"
+      :flow-id="schedulingFlowId"
+      :schedules="schedules.filter((s) => s.flowId === schedulingFlowId)"
+      @close="showSchedule = false"
+      @save="saveSchedule"
+      @remove="removeSchedule"
+    />
   </div>
 </template>
 
@@ -310,6 +334,9 @@ import { getMessage } from '@/utils/i18n';
 import ConfirmDialog from './components/ConfirmDialog.vue';
 import ProgressIndicator from './components/ProgressIndicator.vue';
 import ModelCacheManagement from './components/ModelCacheManagement.vue';
+import FlowEditor from './components/FlowEditor.vue';
+import BuilderEditor from './components/BuilderEditor.vue';
+import ScheduleDialog from './components/ScheduleDialog.vue';
 import {
   DocumentIcon,
   DatabaseIcon,
@@ -328,6 +355,15 @@ const currentTabUrl = ref<string>('');
 const filteredRrFlows = computed(() =>
   rrOnlyBound.value ? rrFlows.value.filter(isFlowBoundToCurrent) : rrFlows.value,
 );
+
+// Flow editor state
+const showFlowEditor = ref(false);
+const editingFlow = ref<any | null>(null);
+const showBuilderEditor = ref(false);
+const editingFlowBuilder = ref<any | null>(null);
+const showSchedule = ref(false);
+const schedulingFlowId = ref<string | null>(null);
+const schedules = ref<any[]>([]);
 
 const loadFlows = async () => {
   try {
@@ -419,6 +455,93 @@ const deleteFlow = async (flowId: string) => {
     console.error('删除失败:', e);
   }
 };
+
+function editFlow(flow: any) {
+  editingFlow.value = flow;
+  showFlowEditor.value = true;
+}
+
+function openBuilder(flow: any) {
+  editingFlowBuilder.value = flow;
+  showBuilderEditor.value = true;
+}
+
+async function saveEditedFlow(f: any) {
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: BACKGROUND_MESSAGE_TYPES.RR_SAVE_FLOW,
+      flow: f,
+    });
+    if (res && res.success) {
+      showFlowEditor.value = false;
+      editingFlow.value = null;
+      await loadFlows();
+    }
+  } catch (e) {
+    console.error('保存失败:', e);
+  }
+}
+
+async function saveEditedFlowFromBuilder(f: any) {
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: BACKGROUND_MESSAGE_TYPES.RR_SAVE_FLOW,
+      flow: f,
+    });
+    if (res && res.success) {
+      showBuilderEditor.value = false;
+      editingFlowBuilder.value = null;
+      await loadFlows();
+    }
+  } catch (e) {
+    console.error('保存失败:', e);
+  }
+}
+
+async function openSchedule(flowId: string) {
+  schedulingFlowId.value = flowId;
+  await loadSchedules();
+  showSchedule.value = true;
+}
+
+async function loadSchedules() {
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: BACKGROUND_MESSAGE_TYPES.RR_LIST_SCHEDULES,
+    });
+    if (res && res.success) schedules.value = res.schedules || [];
+  } catch (e) {
+    console.error('加载定时失败:', e);
+  }
+}
+
+async function saveSchedule(schedule: any) {
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: BACKGROUND_MESSAGE_TYPES.RR_SCHEDULE_FLOW,
+      schedule,
+    });
+    if (res && res.success) {
+      await loadSchedules();
+      showSchedule.value = false;
+      schedulingFlowId.value = null;
+    }
+  } catch (e) {
+    console.error('保存定时失败:', e);
+  }
+}
+
+async function removeSchedule(id: string) {
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: BACKGROUND_MESSAGE_TYPES.RR_UNSCHEDULE_FLOW,
+      scheduleId: id,
+    });
+    if (res && res.success) await loadSchedules();
+  } catch (e) {
+    console.error('删除计划失败:', e);
+  }
+}
 
 const nativeConnectionStatus = ref<'unknown' | 'connected' | 'disconnected'>('unknown');
 const isConnecting = ref(false);

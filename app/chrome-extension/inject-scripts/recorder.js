@@ -11,6 +11,9 @@
   const sampledDrag = [];
 
   let isRecording = false;
+  let isPaused = false;
+  let hideInputValues = false;
+  let highlightBox = null;
   let pendingFlow = {
     id: `flow_${Date.now()}`,
     name: '未命名录制',
@@ -104,7 +107,7 @@
   }
 
   function onClick(e) {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
     const el = e.target instanceof Element ? e.target : null;
     if (!el) return;
     const target = buildTarget(el);
@@ -112,14 +115,15 @@
   }
 
   function onInput(e) {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
     const el =
       e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement
         ? e.target
         : null;
     if (!el) return;
     const target = buildTarget(el);
-    const isSensitive = SENSITIVE_INPUT_TYPES.has((el.getAttribute('type') || '').toLowerCase());
+    const isSensitive =
+      hideInputValues || SENSITIVE_INPUT_TYPES.has((el.getAttribute('type') || '').toLowerCase());
     let value = el.value || '';
     if (isSensitive) {
       const varKey = el.name ? el.name : `var_${Math.random().toString(36).slice(2, 6)}`;
@@ -130,7 +134,7 @@
   }
 
   function onKeydown(e) {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
     // modifier+key or Enter/Backspace etc
     const mods = [];
     if (e.ctrlKey) mods.push('ctrl');
@@ -144,22 +148,11 @@
     pushStep({ type: 'key', keys, screenshotOnFail: false });
   }
 
-  function onKeyup(e) {
-    if (!isRecording) return;
-    const mods = [];
-    if (e.ctrlKey) mods.push('ctrl');
-    if (e.metaKey) mods.push('cmd');
-    if (e.altKey) mods.push('alt');
-    if (e.shiftKey) mods.push('shift');
-    let keyToken = e.key || '';
-    keyToken = keyToken.length === 1 ? keyToken.toLowerCase() : keyToken.toLowerCase();
-    const keys = mods.length ? `${mods.join('+')}+${keyToken}` : keyToken;
-    pushStep({ type: 'key', keys, screenshotOnFail: false });
-  }
+  // keyup 不再记录，避免重复噪声
 
   // Composition IME events (record markers for analysis; playback is no-op via script step)
   function onCompositionStart() {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
     pushStep({
       type: 'script',
       world: 'ISOLATED',
@@ -169,7 +162,7 @@
     });
   }
   function onCompositionEnd() {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
     pushStep({
       type: 'script',
       world: 'ISOLATED',
@@ -181,7 +174,7 @@
 
   let lastScrollAt = 0;
   function onScroll(e) {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
     const nowTs = now();
     if (nowTs - lastScrollAt < THROTTLE_SCROLL_MS) return;
     lastScrollAt = nowTs;
@@ -227,7 +220,7 @@
     document.addEventListener('change', onInput, true);
     document.addEventListener('input', onInput, true);
     document.addEventListener('keydown', onKeydown, true);
-    document.addEventListener('keyup', onKeyup, true);
+    // document.addEventListener('keyup', onKeyup, true);
     document.addEventListener('compositionstart', onCompositionStart, true);
     document.addEventListener('compositionend', onCompositionEnd, true);
     window.addEventListener('scroll', onScroll, { passive: true });
@@ -241,7 +234,7 @@
     document.removeEventListener('change', onInput, true);
     document.removeEventListener('input', onInput, true);
     document.removeEventListener('keydown', onKeydown, true);
-    document.removeEventListener('keyup', onKeyup, true);
+    // document.removeEventListener('keyup', onKeyup, true);
     document.removeEventListener('compositionstart', onCompositionStart, true);
     document.removeEventListener('compositionend', onCompositionEnd, true);
     window.removeEventListener('scroll', onScroll, { passive: true });
@@ -269,7 +262,9 @@
   function start(flowMeta) {
     reset(flowMeta || {});
     isRecording = true;
+    isPaused = false;
     attach();
+    ensureOverlay();
     chrome.runtime.sendMessage({
       type: 'rr_recorder_event',
       payload: { kind: 'start', flow: pendingFlow },
@@ -279,11 +274,107 @@
   function stop() {
     isRecording = false;
     detach();
+    removeOverlay();
     chrome.runtime.sendMessage({
       type: 'rr_recorder_event',
       payload: { kind: 'stop', flow: pendingFlow },
     });
     return pendingFlow;
+  }
+
+  function pause() {
+    isPaused = true;
+    updateOverlayStatus();
+  }
+
+  function resume() {
+    isRecording = true;
+    isPaused = false;
+    attach();
+    ensureOverlay();
+    updateOverlayStatus();
+  }
+
+  function ensureOverlay() {
+    let root = document.getElementById('__rr_rec_overlay');
+    if (root) return;
+    root = document.createElement('div');
+    root.id = '__rr_rec_overlay';
+    Object.assign(root.style, {
+      position: 'fixed',
+      top: '10px',
+      right: '10px',
+      zIndex: 2147483646,
+      fontFamily: 'system-ui,-apple-system,Segoe UI,Roboto,Arial',
+    });
+    root.innerHTML = `
+      <div id="__rr_rec_panel" style="background: rgba(220,38,38,0.95); color: #fff; padding:8px 10px; border-radius:8px; display:flex; align-items:center; gap:8px; box-shadow:0 4px 16px rgba(0,0,0,0.2);">
+        <span id="__rr_badge" style="font-weight:600;">录制中</span>
+        <label style="display:inline-flex; align-items:center; gap:4px; font-size:12px;">
+          <input id="__rr_hide_values" type="checkbox" style="vertical-align:middle;" />隐藏输入值
+        </label>
+        <button id="__rr_pause" style="background:#fff; color:#111; border:none; border-radius:6px; padding:4px 8px; cursor:pointer;">暂停</button>
+        <button id="__rr_stop" style="background:#111; color:#fff; border:none; border-radius:6px; padding:4px 8px; cursor:pointer;">停止</button>
+      </div>
+    `;
+    document.documentElement.appendChild(root);
+    const btnPause = root.querySelector('#__rr_pause');
+    const btnStop = root.querySelector('#__rr_stop');
+    const hideChk = root.querySelector('#__rr_hide_values');
+    hideChk.checked = hideInputValues;
+    hideChk.addEventListener('change', () => (hideInputValues = hideChk.checked));
+    btnPause.addEventListener('click', () => {
+      if (!isPaused) pause();
+      else resume();
+    });
+    btnStop.addEventListener('click', () => {
+      stop();
+    });
+    updateOverlayStatus();
+    // element highlight box
+    highlightBox = document.createElement('div');
+    Object.assign(highlightBox.style, {
+      position: 'fixed',
+      border: '2px solid rgba(59,130,246,0.9)',
+      borderRadius: '4px',
+      background: 'rgba(59,130,246,0.15)',
+      pointerEvents: 'none',
+      zIndex: 2147483645,
+    });
+    document.documentElement.appendChild(highlightBox);
+    document.addEventListener('mousemove', onHoverMove, true);
+  }
+
+  function removeOverlay() {
+    try {
+      const root = document.getElementById('__rr_rec_overlay');
+      if (root) root.remove();
+      if (highlightBox) highlightBox.remove();
+      document.removeEventListener('mousemove', onHoverMove, true);
+    } catch {}
+  }
+
+  function updateOverlayStatus() {
+    const badge = document.getElementById('__rr_badge');
+    const pauseBtn = document.getElementById('__rr_pause');
+    if (badge) badge.textContent = isPaused ? '已暂停' : '录制中';
+    if (pauseBtn) pauseBtn.textContent = isPaused ? '继续' : '暂停';
+  }
+
+  function onHoverMove(e) {
+    if (!highlightBox || !isRecording || isPaused) return;
+    const el = e.target instanceof Element ? e.target : null;
+    if (!el) return;
+    try {
+      const r = el.getBoundingClientRect();
+      Object.assign(highlightBox.style, {
+        left: `${Math.round(r.left)}px`,
+        top: `${Math.round(r.top)}px`,
+        width: `${Math.round(Math.max(0, r.width))}px`,
+        height: `${Math.round(Math.max(0, r.height))}px`,
+        display: r.width > 0 && r.height > 0 ? 'block' : 'none',
+      });
+    } catch {}
   }
 
   chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
@@ -294,10 +385,12 @@
           start(request.meta || {});
           sendResponse({ success: true });
           return true;
+        } else if (cmd === 'pause') {
+          pause();
+          sendResponse({ success: true });
+          return true;
         } else if (cmd === 'resume') {
-          // Attach without resetting flow or sending start event
-          isRecording = true;
-          attach();
+          resume();
           sendResponse({ success: true });
           return true;
         } else if (cmd === 'stop') {

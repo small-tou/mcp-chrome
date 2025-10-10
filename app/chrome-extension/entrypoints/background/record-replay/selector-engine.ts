@@ -52,13 +52,43 @@ export async function locateElement(
           return { ref: ensured.ref, center: ensured.center, resolvedBy: c.type };
         }
       } else if (c.type === 'aria') {
-        // Best-effort: try as CSS first, otherwise ignore in M2
-        const ensured = await chrome.tabs.sendMessage(tabId, {
-          action: TOOL_MESSAGE_TYPES.ENSURE_REF_FOR_SELECTOR,
-          selector: c.value,
-        });
-        if (ensured && ensured.success && ensured.ref && ensured.center) {
-          return { ref: ensured.ref, center: ensured.center, resolvedBy: c.type };
+        // Minimal ARIA role+name parser like: "button[name=提交]" or "textbox[name=用户名]"
+        const v = String(c.value || '').trim();
+        const m = v.match(/^(\w+)\s*\[\s*name\s*=\s*([^\]]+)\]$/);
+        const role = m ? m[1] : '';
+        const name = m ? m[2] : '';
+        const cleanName = name.replace(/^['"]|['"]$/g, '');
+        const ariaSelectors: string[] = [];
+        if (role === 'textbox') {
+          ariaSelectors.push(
+            `[role="textbox"][aria-label=${JSON.stringify(cleanName)}]`,
+            `input[aria-label=${JSON.stringify(cleanName)}]`,
+            `textarea[aria-label=${JSON.stringify(cleanName)}]`,
+          );
+        } else if (role === 'button') {
+          ariaSelectors.push(
+            `[role="button"][aria-label=${JSON.stringify(cleanName)}]`,
+            `button[aria-label=${JSON.stringify(cleanName)}]`,
+          );
+        } else if (role === 'link') {
+          ariaSelectors.push(
+            `[role="link"][aria-label=${JSON.stringify(cleanName)}]`,
+            `a[aria-label=${JSON.stringify(cleanName)}]`,
+          );
+        }
+        if (!ariaSelectors.length && role) {
+          ariaSelectors.push(
+            `[role=${JSON.stringify(role)}][aria-label=${JSON.stringify(cleanName)}]`,
+          );
+        }
+        for (const sel of ariaSelectors) {
+          const ensured = await chrome.tabs.sendMessage(tabId, {
+            action: TOOL_MESSAGE_TYPES.ENSURE_REF_FOR_SELECTOR,
+            selector: sel,
+          });
+          if (ensured && ensured.success && ensured.ref && ensured.center) {
+            return { ref: ensured.ref, center: ensured.center, resolvedBy: c.type };
+          }
         }
       } else if (c.type === 'xpath') {
         // Minimal xpath support via document.evaluate through injected helper

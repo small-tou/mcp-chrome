@@ -10,6 +10,10 @@ import {
   exportFlow,
   exportAllFlows,
   importFlowFromJson,
+  listSchedules,
+  saveSchedule,
+  removeSchedule,
+  type FlowSchedule,
 } from './flow-store';
 import { runFlow } from './flow-runner';
 
@@ -20,6 +24,39 @@ let currentRecording: { tabId: number; flow?: Flow } | null = null;
 let lastClickIdx: number | null = null;
 let lastClickTime = 0;
 let lastNavTaggedAt = 0;
+
+// Alarm helpers for schedules
+async function rescheduleAlarms() {
+  const schedules = await listSchedules();
+  // Clear existing rr_schedule_* alarms
+  const alarms = await chrome.alarms.getAll();
+  await Promise.all(
+    alarms
+      .filter((a) => a.name && a.name.startsWith('rr_schedule_'))
+      .map((a) => chrome.alarms.clear(a.name)),
+  );
+  for (const s of schedules) {
+    if (!s.enabled) continue;
+    const name = `rr_schedule_${s.id}`;
+    if (s.type === 'interval') {
+      const minutes = Math.max(1, Math.floor(Number(s.when) || 0));
+      await chrome.alarms.create(name, { periodInMinutes: minutes });
+    } else if (s.type === 'once') {
+      const whenMs = Date.parse(s.when);
+      if (Number.isFinite(whenMs)) await chrome.alarms.create(name, { when: whenMs });
+    } else if (s.type === 'daily') {
+      // daily HH:mm local time
+      const [hh, mm] = String(s.when || '00:00')
+        .split(':')
+        .map((x) => Number(x));
+      const now = new Date();
+      const next = new Date();
+      next.setHours(hh || 0, mm || 0, 0, 0);
+      if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+      await chrome.alarms.create(name, { when: next.getTime(), periodInMinutes: 24 * 60 });
+    }
+  }
+}
 
 async function ensureRecorderInjected(tabId: number): Promise<void> {
   // Inject helper and recorder scripts
@@ -96,6 +133,9 @@ async function stopRecording(): Promise<{ success: boolean; flow?: Flow; error?:
 }
 
 export function initRecordReplayListeners() {
+  // On startup, re-schedule alarms
+  rescheduleAlarms().catch(() => {});
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       if (message && message.type === 'rr_recorder_event') {
@@ -228,6 +268,40 @@ export function initRecordReplayListeners() {
         case BACKGROUND_MESSAGE_TYPES.RR_IMPORT_FLOW: {
           importFlowFromJson(message.json)
             .then((flows) => sendResponse({ success: true, imported: flows.length }))
+            .catch((e) => sendResponse({ success: false, error: e?.message || String(e) }));
+          return true;
+        }
+        case BACKGROUND_MESSAGE_TYPES.RR_LIST_SCHEDULES: {
+          listSchedules()
+            .then((s) => sendResponse({ success: true, schedules: s }))
+            .catch((e) => sendResponse({ success: false, error: e?.message || String(e) }));
+          return true;
+        }
+        case BACKGROUND_MESSAGE_TYPES.RR_SCHEDULE_FLOW: {
+          const s = message.schedule as FlowSchedule;
+          if (!s || !s.id || !s.flowId) {
+            sendResponse({ success: false, error: 'invalid schedule' });
+            return true;
+          }
+          saveSchedule(s)
+            .then(async () => {
+              await rescheduleAlarms();
+              sendResponse({ success: true });
+            })
+            .catch((e) => sendResponse({ success: false, error: e?.message || String(e) }));
+          return true;
+        }
+        case BACKGROUND_MESSAGE_TYPES.RR_UNSCHEDULE_FLOW: {
+          const scheduleId = String(message.scheduleId || '');
+          if (!scheduleId) {
+            sendResponse({ success: false, error: 'invalid scheduleId' });
+            return true;
+          }
+          removeSchedule(scheduleId)
+            .then(async () => {
+              await rescheduleAlarms();
+              sendResponse({ success: true });
+            })
             .catch((e) => sendResponse({ success: false, error: e?.message || String(e) }));
           return true;
         }
@@ -365,3 +439,19 @@ export function initRecordReplayListeners() {
     }
   });
 }
+
+// Alarm listener executes scheduled flows
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  try {
+    if (!alarm?.name || !alarm.name.startsWith('rr_schedule_')) return;
+    const id = alarm.name.slice('rr_schedule_'.length);
+    const schedules = await listSchedules();
+    const s = schedules.find((x) => x.id === id && x.enabled);
+    if (!s) return;
+    const flow = await getFlow(s.flowId);
+    if (!flow) return;
+    await runFlow(flow, { args: s.args || {}, returnLogs: false });
+  } catch (e) {
+    // swallow to not spam logs
+  }
+});

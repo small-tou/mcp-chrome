@@ -537,23 +537,61 @@
           const sel = String(request.selector || '').trim();
           let el = null;
           if (useText && textQuery) {
-            const all = Array.from(document.querySelectorAll('body *'));
-            for (const node of all) {
+            const normalize = (s) =>
+              String(s || '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+            const query = normalize(textQuery);
+            const bigrams = (s) => {
+              const arr = [];
+              for (let i = 0; i < s.length - 1; i++) arr.push(s.slice(i, i + 2));
+              return arr;
+            };
+            const dice = (a, b) => {
+              if (!a || !b) return 0;
+              const A = bigrams(a);
+              const B = bigrams(b);
+              if (A.length === 0 || B.length === 0) return 0;
+              let inter = 0;
+              const map = new Map();
+              for (const t of A) map.set(t, (map.get(t) || 0) + 1);
+              for (const t of B) {
+                const c = map.get(t) || 0;
+                if (c > 0) {
+                  inter++;
+                  map.set(t, c - 1);
+                }
+              }
+              return (2 * inter) / (A.length + B.length);
+            };
+            let best = { el: null, score: 0 };
+            const walker = document.createTreeWalker(
+              document.body || document.documentElement,
+              NodeFilter.SHOW_ELEMENT,
+            );
+            let visited = 0;
+            while (walker.nextNode()) {
+              const node = /** @type {Element} */ (walker.currentNode);
               try {
                 const cs = window.getComputedStyle(node);
                 if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0')
                   continue;
                 const rect = /** @type {HTMLElement} */ (node).getBoundingClientRect();
                 if (rect.width <= 0 || rect.height <= 0) continue;
-                const txt = (node.textContent || '').trim();
-                if (txt && txt.includes(textQuery)) {
+                const txt = normalize(node.textContent || '');
+                if (!txt) continue;
+                // quick path: substring contains
+                if (txt.includes(query)) {
                   el = node;
                   break;
                 }
-              } catch (_) {
-                /* ignore */
-              }
+                const sc = dice(txt, query);
+                if (sc > best.score) best = { el: node, score: sc };
+              } catch {}
+              if (++visited > 5000) break;
             }
+            if (!el && best.el && best.score >= 0.6) el = best.el;
           } else {
             if (!sel) {
               sendResponse({ success: false, error: 'selector is required' });
@@ -625,21 +663,136 @@
       }
       if (request && request.action === 'collectVariables') {
         try {
-          const vars = Array.isArray(request.variables) ? request.variables : [];
-          const values = {};
-          for (const v of vars) {
-            const key = String(v && v.key ? v.key : '');
-            if (!key) continue;
-            const label = v.label || key;
-            const def = v.default || '';
-            const promptText = `请输入参数 ${label} (${key})`;
-            // Note: prompt in page context; in some sites may be blocked by CSP
-            let val = window.prompt(promptText, def);
-            if (typeof val !== 'string') val = def;
-            values[key] = val;
+          let vars = Array.isArray(request.variables) ? request.variables : [];
+          if ((!vars || vars.length === 0) && request.payload) {
+            try {
+              const p = JSON.parse(String(request.payload || '{}'));
+              if (Array.isArray(p.variables)) vars = p.variables;
+            } catch {}
           }
-          sendResponse({ success: true, values });
-          return true;
+          const useOverlay = request.useOverlay !== false; // default true
+          const values = {};
+          if (!useOverlay) {
+            for (const v of vars) {
+              const key = String(v && v.key ? v.key : '');
+              if (!key) continue;
+              const label = v.label || key;
+              const def = v.default || '';
+              const promptText = `请输入参数 ${label} (${key})`;
+              let val = window.prompt(promptText, def);
+              if (typeof val !== 'string') val = def;
+              values[key] = val;
+            }
+            sendResponse({ success: true, values });
+            return true;
+          }
+          // Build overlay form
+          const hostId = '__rr_var_overlay__';
+          let host = document.getElementById(hostId);
+          if (host) host.remove();
+          host = document.createElement('div');
+          host.id = hostId;
+          Object.assign(host.style, {
+            position: 'fixed',
+            inset: '0',
+            background: 'rgba(0,0,0,0.35)',
+            zIndex: 2147483646,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          });
+          const panel = document.createElement('div');
+          Object.assign(panel.style, {
+            background: '#fff',
+            borderRadius: '8px',
+            width: 'min(520px, 96vw)',
+            maxHeight: '80vh',
+            overflow: 'auto',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+            padding: '16px',
+            fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
+          });
+          const title = document.createElement('div');
+          title.textContent = '请输入回放参数';
+          Object.assign(title.style, { fontSize: '16px', fontWeight: '600', marginBottom: '12px' });
+          const form = document.createElement('form');
+          for (const v of vars) {
+            const row = document.createElement('div');
+            Object.assign(row.style, { marginBottom: '10px' });
+            const label = document.createElement('label');
+            label.textContent = `${v.label || v.key}${v.sensitive ? ' (敏感)' : ''}`;
+            Object.assign(label.style, {
+              display: 'block',
+              marginBottom: '6px',
+              fontWeight: '500',
+            });
+            const input = document.createElement('input');
+            input.type = v.sensitive ? 'password' : 'text';
+            input.name = String(v.key);
+            input.value = String(v.default || '');
+            Object.assign(input.style, {
+              width: '100%',
+              boxSizing: 'border-box',
+              padding: '8px 10px',
+              border: '1px solid #d0d7de',
+              borderRadius: '6px',
+              outline: 'none',
+            });
+            row.appendChild(label);
+            row.appendChild(input);
+            form.appendChild(row);
+          }
+          const actions = document.createElement('div');
+          Object.assign(actions.style, { display: 'flex', gap: '8px', marginTop: '12px' });
+          const ok = document.createElement('button');
+          ok.type = 'submit';
+          ok.textContent = '确定';
+          Object.assign(ok.style, {
+            background: '#0969da',
+            color: '#fff',
+            border: 'none',
+            padding: '8px 16px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+          });
+          const cancel = document.createElement('button');
+          cancel.type = 'button';
+          cancel.textContent = '取消';
+          Object.assign(cancel.style, {
+            background: '#f3f4f6',
+            color: '#111',
+            border: '1px solid #d0d7de',
+            padding: '8px 16px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+          });
+          actions.appendChild(ok);
+          actions.appendChild(cancel);
+          panel.appendChild(title);
+          panel.appendChild(form);
+          panel.appendChild(actions);
+          host.appendChild(panel);
+          document.documentElement.appendChild(host);
+
+          const cleanup = () => {
+            try {
+              host.remove();
+            } catch {}
+          };
+          cancel.onclick = () => {
+            cleanup();
+            sendResponse({ success: false, cancelled: true });
+          };
+          form.onsubmit = (e) => {
+            e.preventDefault();
+            for (const v of vars) {
+              const el = form.querySelector(`input[name="${CSS.escape(String(v.key))}"]`);
+              if (el) values[v.key] = /** @type {HTMLInputElement} */ (el).value;
+            }
+            cleanup();
+            sendResponse({ success: true, values });
+          };
+          return true; // async
         } catch (e) {
           sendResponse({ success: false, error: String(e && e.message ? e.message : e) });
           return true;

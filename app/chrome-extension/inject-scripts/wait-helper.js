@@ -145,6 +145,58 @@
     });
   }
 
+  function waitForSelector({ selector, visible = true, timeout = 5000 }) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      let resolved = false;
+
+      const isMatch = () => {
+        try {
+          const el = document.querySelector(selector);
+          if (!el) return null;
+          if (!visible) return el;
+          return isVisible(el) ? el : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const done = (result) => {
+        if (resolved) return;
+        resolved = true;
+        obs && obs.disconnect();
+        clearTimeout(timer);
+        resolve(result);
+      };
+
+      const check = () => {
+        const el = isMatch();
+        if (el) {
+          const ref = ensureRefForElement(el);
+          const center = centerOf(el);
+          done({ success: true, matched: { ref, center }, tookMs: Date.now() - start });
+        }
+      };
+
+      const obs = new MutationObserver(check);
+      try {
+        obs.observe(document.documentElement || document.body, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true,
+        });
+      } catch {}
+
+      // initial check
+      check();
+      const timer = setTimeout(
+        () => done({ success: false, reason: 'timeout', tookMs: Date.now() - start }),
+        Math.max(0, timeout),
+      );
+    });
+  }
+
   chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     try {
       if (request && request.action === 'wait_helper_ping') {
@@ -160,6 +212,17 @@
           return true;
         }
         waitFor({ text, appear, timeout }).then((res) => sendResponse(res));
+        return true; // async
+      }
+      if (request && request.action === 'waitForSelector') {
+        const selector = String(request.selector || '').trim();
+        const visible = request.visible !== false; // default true
+        const timeout = Number(request.timeout || 5000);
+        if (!selector) {
+          sendResponse({ success: false, error: 'selector is required' });
+          return true;
+        }
+        waitForSelector({ selector, visible, timeout }).then((res) => sendResponse(res));
         return true; // async
       }
     } catch (e) {

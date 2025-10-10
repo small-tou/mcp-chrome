@@ -34,6 +34,10 @@ export const BACKGROUND_MESSAGE_TYPES = {
   RR_EXPORT_FLOW: 'rr_export_flow',
   RR_EXPORT_ALL: 'rr_export_all',
   RR_IMPORT_FLOW: 'rr_import_flow',
+  // Scheduling
+  RR_SCHEDULE_FLOW: 'rr_schedule_flow',
+  RR_UNSCHEDULE_FLOW: 'rr_unschedule_flow',
+  RR_LIST_SCHEDULES: 'rr_list_schedules',
 } as const;
 
 // Offscreen message types

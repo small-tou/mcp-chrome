@@ -108,6 +108,7 @@ export const STORAGE_KEYS = {
   RR_FLOWS: 'rr_flows',
   RR_RUNS: 'rr_runs',
   RR_PUBLISHED: 'rr_published_flows',
+  RR_SCHEDULES: 'rr_schedules',
 } as const;
 
 // Notification Configuration

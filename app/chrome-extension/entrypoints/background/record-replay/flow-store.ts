@@ -108,3 +108,35 @@ export async function importFlowFromJson(json: string): Promise<Flow[]> {
   }
   return flowsToImport;
 }
+
+// Scheduling support
+export type ScheduleType = 'once' | 'interval' | 'daily';
+export interface FlowSchedule {
+  id: string; // schedule id
+  flowId: string;
+  type: ScheduleType;
+  enabled: boolean;
+  // when: ISO string for 'once'; HH:mm for 'daily'; minutes for 'interval'
+  when: string;
+  // optional variables to pass when running
+  args?: Record<string, any>;
+}
+
+export async function listSchedules(): Promise<FlowSchedule[]> {
+  const res = await chrome.storage.local.get([STORAGE_KEYS.RR_SCHEDULES]);
+  return (res[STORAGE_KEYS.RR_SCHEDULES] as FlowSchedule[]) || [];
+}
+
+export async function saveSchedule(s: FlowSchedule): Promise<void> {
+  const list = await listSchedules();
+  const idx = list.findIndex((x) => x.id === s.id);
+  if (idx >= 0) list[idx] = s;
+  else list.push(s);
+  await chrome.storage.local.set({ [STORAGE_KEYS.RR_SCHEDULES]: list });
+}
+
+export async function removeSchedule(scheduleId: string): Promise<void> {
+  const list = await listSchedules();
+  const filtered = list.filter((s) => s.id !== scheduleId);
+  await chrome.storage.local.set({ [STORAGE_KEYS.RR_SCHEDULES]: filtered });
+}

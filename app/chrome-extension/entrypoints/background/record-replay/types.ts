@@ -23,7 +23,12 @@ export type StepType =
   | 'wait'
   | 'assert'
   | 'script'
-  | 'navigate';
+  | 'navigate'
+  | 'http'
+  | 'extract'
+  | 'openTab'
+  | 'switchTab'
+  | 'closeTab';
 
 export interface StepBase {
   id: string;
@@ -102,7 +107,49 @@ export type Step =
   | StepWait
   | StepAssert
   | StepScript
-  | (StepBase & { type: 'navigate'; url: string });
+  | (StepBase & { type: 'navigate'; url: string })
+  | StepHttp
+  | StepExtract
+  | StepOpenTab
+  | StepSwitchTab
+  | StepCloseTab;
+
+export interface StepHttp extends StepBase {
+  type: 'http';
+  method?: string;
+  url: string;
+  headers?: Record<string, string>;
+  body?: any;
+  saveAs?: string;
+  assign?: Record<string, string>;
+}
+
+export interface StepExtract extends StepBase {
+  type: 'extract';
+  selector?: string;
+  attr?: string; // 'text'|'textContent' to read text
+  js?: string; // custom JS that returns value
+  saveAs: string;
+}
+
+export interface StepOpenTab extends StepBase {
+  type: 'openTab';
+  url?: string;
+  newWindow?: boolean;
+}
+
+export interface StepSwitchTab extends StepBase {
+  type: 'switchTab';
+  tabId?: number;
+  urlContains?: string;
+  titleContains?: string;
+}
+
+export interface StepCloseTab extends StepBase {
+  type: 'closeTab';
+  tabIds?: number[];
+  url?: string;
+}
 
 export interface VariableDef {
   key: string;
@@ -110,6 +157,38 @@ export interface VariableDef {
   sensitive?: boolean;
   default?: string;
   rules?: { required?: boolean; pattern?: string };
+}
+
+export type NodeType =
+  | 'click'
+  | 'dblclick'
+  | 'fill'
+  | 'key'
+  | 'wait'
+  | 'assert'
+  | 'script'
+  | 'navigate'
+  | 'openTab'
+  | 'switchTab'
+  | 'closeTab'
+  | 'http'
+  | 'extract'
+  | 'delay';
+
+export interface NodeBase {
+  id: string;
+  type: NodeType;
+  name?: string;
+  disabled?: boolean;
+  config?: any;
+  ui?: { x: number; y: number };
+}
+
+export interface Edge {
+  id: string;
+  from: string;
+  to: string;
+  label?: 'default' | 'true' | 'false' | 'onError';
 }
 
 export interface Flow {
@@ -128,6 +207,10 @@ export interface Flow {
   };
   variables?: VariableDef[];
   steps: Step[];
+  // Flow V2（可选）：画布编排
+  nodes?: NodeBase[];
+  edges?: Edge[];
+  subflows?: Record<string, { nodes: NodeBase[]; edges: Edge[] }>;
 }
 
 export interface RunLogEntry {
