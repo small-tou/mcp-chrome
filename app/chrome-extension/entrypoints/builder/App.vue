@@ -128,6 +128,7 @@
         :variables="store.flowLocal.variables || []"
         :highlight-field="highlightField"
         :subflow-ids="store.listSubflowIds()"
+        @remove-node="store.removeNode"
         @create-subflow="store.addSubflow"
         @switch-to-subflow="store.switchToSubflow"
       />

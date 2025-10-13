@@ -259,10 +259,10 @@ defineExpose({ zoomIn, zoomOut, fitAll });
 /* Per-node error indicator (shield-x) */
 :deep(.node-error) {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 18px;
-  height: 18px;
+  top: -12px;
+  right: 3px;
+  width: 12px;
+  height: 12px;
   display: flex;
   align-items: center;
   justify-content: center;

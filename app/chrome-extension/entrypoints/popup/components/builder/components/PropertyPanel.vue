@@ -453,16 +453,18 @@ const props = defineProps<{
   variables?: Array<{ key: string }>;
 }>();
 const emit = defineEmits<{
-  (e: 'createSubflow', id: string): void;
-  (e: 'switchToSubflow', id: string): void;
-  (e: 'removeNode', id: string): void;
+  // Use kebab-case event names to match parent listeners
+  (e: 'create-subflow', id: string): void;
+  (e: 'switch-to-subflow', id: string): void;
+  (e: 'remove-node', id: string): void;
 }>();
 
 function onRemove() {
   // Emit remove event only when node exists
   const n = props.node;
   if (!n) return;
-  emit('removeNode', n.id);
+  // Emit kebab-case event to match parent template listener
+  emit('remove-node', n.id);
 }
 
 const waitJson = computed({
@@ -610,7 +612,8 @@ const whileJson = computed({
 function onCreateSubflow() {
   const id = prompt('请输入新子流ID');
   if (!id) return;
-  emit('createSubflow', id);
+  // Emit kebab-case event to match parent template listener
+  emit('create-subflow', id);
   const n = props.node as any;
   if (n && n.config) n.config.subflowId = id;
 }
