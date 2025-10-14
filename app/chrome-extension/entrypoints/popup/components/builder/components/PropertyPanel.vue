@@ -32,6 +32,7 @@
       <component
         v-if="node && PropComp"
         :is="PropComp"
+        :key="node.type + ':' + node.id"
         :node="node"
         :variables="variables"
         :subflow-ids="subflowIds"
@@ -111,6 +112,9 @@ const emit = defineEmits<{
   (e: 'switch-to-subflow', id: string): void;
   (e: 'remove-node', id: string): void;
 }>();
+
+// Resolve per-node property component from registry
+const PropComp = computed(() => (props.node ? NODE_UI_REGISTRY[props.node.type]?.property : null));
 
 function onRemove() {
   // Emit remove event only when node exists
@@ -562,7 +566,6 @@ watch(
 
 /* 内容区 */
 .panel-content {
-  flex: 1;
   display: flex;
   flex-direction: column;
 }
@@ -841,4 +844,3 @@ watch(
   background: transparent !important;
 }
 </style>
-const PropComp = computed(() => (props.node ? NODE_UI_REGISTRY[props.node.type]?.property : null));

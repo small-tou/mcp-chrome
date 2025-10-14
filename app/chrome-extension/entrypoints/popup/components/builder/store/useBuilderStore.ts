@@ -13,7 +13,8 @@ import {
   summarizeNode,
   topoOrder,
 } from '../model/transforms';
-import { defaultConfigOf } from '../model/ui-nodes';
+import { defaultConfigOf, getIoConstraint } from '../model/ui-nodes';
+import { toast } from '../model/toast';
 
 export function useBuilderStore(initial?: FlowV2 | null) {
   const flowLocal = reactive<FlowV2>({ id: '', name: '', version: 1, steps: [], variables: [] });
@@ -224,11 +225,31 @@ export function useBuilderStore(initial?: FlowV2 | null) {
 
   function onConnect(sourceId: string, targetId: string, label: string = 'default') {
     // prevent self-loop
-    if (sourceId === targetId) return;
-    // Disallow inbound connections to trigger node
+    if (sourceId === targetId) {
+      toast('不能连接到自身', 'warn');
+      return;
+    }
+    // IO constraints
     try {
-      const target = nodes.find((n) => n.id === targetId);
-      if (target && (target.type as any) === 'trigger') return;
+      const src = nodes.find((n) => n.id === sourceId);
+      const dst = nodes.find((n) => n.id === targetId);
+      if (!src || !dst) return;
+      const srcIo = getIoConstraint(src.type as any);
+      const dstIo = getIoConstraint(dst.type as any);
+      // Inputs: respect numeric maximum; 'any' means unlimited
+      const incoming = edges.filter((e) => e.to === targetId).length;
+      if (dstIo.inputs !== 'any' && incoming >= (dstIo.inputs as number)) {
+        toast(`该节点最多允许 ${dstIo.inputs} 条入边`, 'warn');
+        return;
+      }
+      // Outputs: respect numeric maximum when defined
+      if (srcIo.outputs !== 'any') {
+        const outgoing = edges.filter((e) => e.from === sourceId).length;
+        if (outgoing >= (srcIo.outputs as number)) {
+          toast(`该节点最多允许 ${srcIo.outputs} 条出边`, 'warn');
+          return;
+        }
+      }
     } catch {}
     // 单一同标签出边：删除同源 + 同标签的已有边
     for (let i = edges.length - 1; i >= 0; i--) {

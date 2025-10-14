@@ -93,31 +93,44 @@ function onRemove() {
 
 <style scoped>
 .property-panel {
-  width: 360px;
-  height: 100%;
   background: var(--rr-card);
-  border-left: 1px solid var(--rr-border);
+  border: 1px solid var(--rr-border);
+  border-radius: 16px;
+  margin: 16px;
+  padding: 0;
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+  scrollbar-width: none;
+  scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
+}
+.panel-content {
   display: flex;
   flex-direction: column;
 }
-.panel-content {
-  flex: 1;
-  overflow: auto;
-}
 .panel-header {
+  padding: 12px 12px 12px 20px;
+  border-bottom: 1px solid var(--rr-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--rr-border);
+  gap: 8px;
 }
 .header-title {
+  font-size: 15px;
   font-weight: 600;
-  font-size: 14px;
+  color: var(--rr-text);
+  margin-bottom: 4px;
 }
 .header-id {
   font-size: 11px;
-  color: var(--rr-muted);
+  color: var(--rr-text-weak);
+  font-family: 'Monaco', monospace;
+  opacity: 0.7;
 }
 .btn-delete {
   width: 28px;
@@ -127,15 +140,19 @@ function onRemove() {
   justify-content: center;
   border: 1px solid var(--rr-border);
   background: var(--rr-card);
-  color: var(--rr-text-secondary);
+  color: var(--rr-danger);
   border-radius: 6px;
   cursor: pointer;
 }
+.btn-delete:hover {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.3);
+}
 .form-section {
-  padding: 12px 12px 16px;
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
 }
 .form-group {
   display: grid;
@@ -144,8 +161,9 @@ function onRemove() {
   gap: 8px;
 }
 .form-label {
-  color: var(--rr-muted);
-  font-size: 12px;
+  color: var(--rr-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
 }
 .text {
   font-size: 13px;
@@ -163,12 +181,25 @@ function onRemove() {
   background: var(--rr-border);
 }
 .panel-empty {
-  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 40px 20px;
 }
 .empty-text {
-  color: var(--rr-muted);
+  color: var(--rr-text-secondary);
+}
+
+/* Hide scrollbars in WebKit while keeping scrollability */
+.property-panel :deep(::-webkit-scrollbar) {
+  width: 0;
+  height: 0;
+}
+.property-panel :deep(::-webkit-scrollbar-thumb) {
+  background-color: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+}
+.property-panel :deep(::-webkit-scrollbar-track) {
+  background: transparent !important;
 }
 </style>

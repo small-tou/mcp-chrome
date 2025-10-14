@@ -58,12 +58,33 @@ export const NODE_UI_LIST: NodeUIConfig[] = [
   {
     type: 'trigger' as any,
     label: '触发器',
-    category: 'Flow',
-    iconClass: 'icon-exec',
+    category: 'Actions',
+    iconClass: 'icon-trigger',
     canvas: baseCard,
     property: PropTrigger,
     io: { inputs: 0, outputs: 1 },
-    defaultConfig: () => ({ type: 'manual', description: '' }),
+    defaultConfig: () => ({
+      enabled: true,
+      description: '',
+      modes: {
+        manual: true,
+        url: false,
+        contextMenu: false,
+        command: false,
+        dom: false,
+        schedule: false,
+      },
+      url: { rules: [] as Array<{ kind: 'url' | 'domain' | 'path'; value: string }> },
+      contextMenu: { title: '运行工作流', contexts: ['all'] as string[], enabled: false },
+      command: { commandKey: '', enabled: false },
+      dom: { selector: '', appear: true, once: true, debounceMs: 800, enabled: false },
+      schedules: [] as Array<{
+        id?: string;
+        type: 'once' | 'interval' | 'daily';
+        when: string;
+        enabled: boolean;
+      }>,
+    }),
   },
   {
     type: 'navigate',
@@ -312,4 +333,16 @@ export function registerExtraUiNodes(list: NodeUIConfig[]) {
     (NODE_UI_LIST as any).push(n);
     (REGISTRY_MAP as any)[n.type] = n;
   }
+}
+
+// IO constraints helper with sensible defaults for our graph
+export function getIoConstraint(t: NodeType): { inputs: number | 'any'; outputs: number | 'any' } {
+  const item = (NODE_UI_REGISTRY as any)[t] as NodeUIConfig | undefined;
+  const io = item?.io || {};
+  // Defaults: most nodes have single input; outputs unlimited unless otherwise defined
+  let inputs: number | 'any' = (io.inputs as any) ?? 1;
+  let outputs: number | 'any' = (io.outputs as any) ?? 'any';
+  if ((t as any) === 'trigger') inputs = 0;
+  if ((t as any) === 'if') outputs = 'any';
+  return { inputs, outputs };
 }

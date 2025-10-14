@@ -18,9 +18,17 @@ import ILucideRefreshCcw from '~icons/lucide/refresh-ccw';
 import ILucideSquare from '~icons/lucide/square';
 import ILucideArrowLeftRight from '~icons/lucide/arrow-left-right';
 import ILucideX from '~icons/lucide/x';
+import ILucideZap from '~icons/lucide/zap';
+import ILucideCamera from '~icons/lucide/camera';
+import ILucideBell from '~icons/lucide/bell';
+import ILucideWrench from '~icons/lucide/wrench';
+import ILucideFrame from '~icons/lucide/frame';
+import ILucideDownload from '~icons/lucide/download';
 
 export function iconComp(t?: string) {
   switch (t) {
+    case 'trigger':
+      return ILucideZap;
     case 'click':
     case 'dblclick':
       return ILucideMousePointerClick;
@@ -34,6 +42,18 @@ export function iconComp(t?: string) {
       return ILucideGlobe;
     case 'script':
       return ILucideFileCode2;
+    case 'screenshot':
+      return ILucideCamera;
+    case 'triggerEvent':
+      return ILucideBell;
+    case 'setAttribute':
+      return ILucideWrench;
+    case 'loopElements':
+      return ILucideRepeat;
+    case 'switchFrame':
+      return ILucideFrame;
+    case 'handleDownload':
+      return ILucideDownload;
     case 'extract':
       return ILucideScan;
     case 'wait':

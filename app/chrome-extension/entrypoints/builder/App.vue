@@ -212,6 +212,12 @@
         </button>
       </div>
     </div>
+    <!-- simple toast container -->
+    <div class="rr-toast-container">
+      <div v-for="t in toasts" :key="t.id" class="rr-toast" :data-level="t.level">
+        {{ t.message }}
+      </div>
+    </div>
   </div>
   <!-- Rename dialog -->
   <div v-if="renameVisible" class="rr-modal">
@@ -264,6 +270,28 @@ function toggleTheme() {
   } catch {}
 }
 const store = useBuilderStore();
+
+// toast event bus (listen to rr_toast)
+type ToastItem = { id: string; message: string; level: 'info' | 'warn' | 'error' };
+const toasts = ref<ToastItem[]>([]);
+function pushToast(message: string, level: 'info' | 'warn' | 'error' = 'warn') {
+  const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const item: ToastItem = { id, message, level };
+  toasts.value.push(item);
+  setTimeout(() => {
+    const idx = toasts.value.findIndex((x) => x.id === id);
+    if (idx >= 0) toasts.value.splice(idx, 1);
+  }, 2500);
+}
+function onToast(ev: any) {
+  try {
+    const msg = String(ev?.detail?.message || '');
+    const level = (ev?.detail?.level || 'warn') as any;
+    if (msg) pushToast(msg, level);
+  } catch {}
+}
+onMounted(() => window.addEventListener('rr_toast', onToast as any));
+onUnmounted(() => window.removeEventListener('rr_toast', onToast as any));
 
 // Parse query string
 function getQuery(): Record<string, string> {
@@ -378,12 +406,133 @@ function applyRename() {
   renameVisible.value = false;
 }
 
-function save() {
+async function save() {
   if (store.isEditingMain()) store.flowLocal.steps = nodesToSteps(store.nodes, store.edges);
   const result = JSON.parse(
     JSON.stringify({ ...store.flowLocal, nodes: store.nodes, edges: store.edges }),
   );
-  chrome.runtime.sendMessage({ type: BACKGROUND_MESSAGE_TYPES.RR_SAVE_FLOW, flow: result });
+  await chrome.runtime.sendMessage({ type: BACKGROUND_MESSAGE_TYPES.RR_SAVE_FLOW, flow: result });
+  try {
+    await syncTriggersAndSchedules(result.id, result.nodes || []);
+  } catch {}
+}
+
+function trigId(flowId: string, nodeId: string, kind: string) {
+  return `trg_${flowId}_${nodeId}_${kind}`;
+}
+
+function schId(flowId: string, nodeId: string, idx: number) {
+  return `sch_${flowId}_${nodeId}_${idx}`;
+}
+
+async function syncTriggersAndSchedules(flowId: string, nodes: any[]) {
+  const triggersNeeded: any[] = [];
+  const schedulesNeeded: any[] = [];
+  const tnodes = (nodes || []).filter((n: any) => n && n.type === 'trigger');
+  for (const n of tnodes) {
+    const cfg = n.config || {};
+    const enabled = cfg.enabled !== false;
+    if (cfg.modes?.url && Array.isArray(cfg.url?.rules) && cfg.url.rules.length) {
+      triggersNeeded.push({
+        id: trigId(flowId, n.id, 'url'),
+        type: 'url',
+        enabled,
+        flowId,
+        match: cfg.url.rules,
+      });
+    }
+    if (cfg.modes?.contextMenu && cfg.contextMenu?.title) {
+      triggersNeeded.push({
+        id: trigId(flowId, n.id, 'menu'),
+        type: 'contextMenu',
+        enabled,
+        flowId,
+        title: cfg.contextMenu.title,
+        contexts: cfg.contextMenu.contexts || ['all'],
+      });
+    }
+    if (cfg.modes?.command && cfg.command?.commandKey) {
+      triggersNeeded.push({
+        id: trigId(flowId, n.id, 'cmd'),
+        type: 'command',
+        enabled,
+        flowId,
+        commandKey: String(cfg.command.commandKey),
+      });
+    }
+    if (cfg.modes?.dom && cfg.dom?.selector) {
+      triggersNeeded.push({
+        id: trigId(flowId, n.id, 'dom'),
+        type: 'dom',
+        enabled,
+        flowId,
+        selector: cfg.dom.selector,
+        appear: cfg.dom.appear !== false,
+        once: cfg.dom.once !== false,
+        debounceMs: Number(cfg.dom.debounceMs ?? 800),
+      });
+    }
+    if (cfg.modes?.schedule && Array.isArray(cfg.schedules)) {
+      cfg.schedules.forEach((s: any, i: number) => {
+        const id = schId(flowId, n.id, i);
+        schedulesNeeded.push({
+          id,
+          flowId,
+          type: s.type || 'interval',
+          when: String(s.when || ''),
+          enabled: s.enabled !== false,
+        });
+      });
+    }
+  }
+  // sync triggers
+  try {
+    const list =
+      (await chrome.runtime.sendMessage({ type: BACKGROUND_MESSAGE_TYPES.RR_LIST_TRIGGERS })) || {};
+    const existing: any[] = list.triggers || [];
+    const mine = existing.filter((x) => String(x.flowId) === String(flowId));
+    const needIds = new Set(triggersNeeded.map((t) => t.id));
+    // save or update
+    for (const t of triggersNeeded) {
+      await chrome.runtime.sendMessage({
+        type: BACKGROUND_MESSAGE_TYPES.RR_SAVE_TRIGGER,
+        trigger: t,
+      });
+    }
+    // delete stale
+    for (const t of mine) {
+      if (!needIds.has(t.id)) {
+        await chrome.runtime.sendMessage({
+          type: BACKGROUND_MESSAGE_TYPES.RR_DELETE_TRIGGER,
+          id: t.id,
+        });
+      }
+    }
+    await chrome.runtime.sendMessage({ type: BACKGROUND_MESSAGE_TYPES.RR_REFRESH_TRIGGERS });
+  } catch {}
+  // sync schedules
+  try {
+    const list =
+      (await chrome.runtime.sendMessage({ type: BACKGROUND_MESSAGE_TYPES.RR_LIST_SCHEDULES })) ||
+      {};
+    const existing: any[] = list.schedules || [];
+    const mine = existing.filter((x) => String(x.flowId) === String(flowId));
+    const needIds = new Set(schedulesNeeded.map((s) => s.id));
+    for (const s of schedulesNeeded) {
+      await chrome.runtime.sendMessage({
+        type: BACKGROUND_MESSAGE_TYPES.RR_SCHEDULE_FLOW,
+        schedule: s,
+      });
+    }
+    for (const s of mine) {
+      if (!needIds.has(s.id)) {
+        await chrome.runtime.sendMessage({
+          type: BACKGROUND_MESSAGE_TYPES.RR_UNSCHEDULE_FLOW,
+          scheduleId: s.id,
+        });
+      }
+    }
+  } catch {}
 }
 
 async function exportFlow() {
@@ -598,6 +747,35 @@ function focusNode(id: string) {
 .topbar > * {
   pointer-events: auto;
 }
+
+.rr-toast-container {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rr-toast {
+  min-width: 180px;
+  max-width: 360px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #111;
+  background: #fff8e1;
+  border: 1px solid #facc15;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.rr-toast[data-level='info'] {
+  background: #e0f2fe;
+  border-color: #38bdf8;
+}
+.rr-toast[data-level='error'] {
+  background: #fee2e2;
+  border-color: #ef4444;
+}
 .topbar .left {
   display: flex;
   gap: 8px;
@@ -632,7 +810,6 @@ function focusNode(id: string) {
   right: 0;
   /* keep below topbar and pinned above bottom */
   top: 52px;
-  bottom: 12px;
   z-index: 10;
   pointer-events: auto;
 }

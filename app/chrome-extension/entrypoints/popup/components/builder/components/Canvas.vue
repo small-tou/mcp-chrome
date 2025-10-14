@@ -336,7 +336,7 @@ defineExpose({ zoomIn, zoomOut, fitAll });
   padding: 0;
 }
 
-/* 节点图标 - 更大的圆角渐变背景 */
+/* Node icon: keep container size; shrink inner icon via font-size */
 :deep(.node-icon) {
   width: 28px;
   height: 28px;
@@ -346,7 +346,7 @@ defineExpose({ zoomIn, zoomOut, fitAll });
   justify-content: center;
   flex-shrink: 0;
   color: #fff;
-  font-size: 18px;
+  font-size: 14px; /* inner svg is 1em; smaller but container unchanged */
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
@@ -373,6 +373,24 @@ defineExpose({ zoomIn, zoomOut, fitAll });
 :deep(.icon-script) {
   background: #a8edea;
   color: #111;
+}
+:deep(.icon-screenshot) {
+  background: #06b6d4;
+}
+:deep(.icon-trigger) {
+  background: #f59e0b;
+}
+:deep(.icon-attr) {
+  background: #8b5cf6;
+}
+:deep(.icon-loop) {
+  background: #22c55e;
+}
+:deep(.icon-frame) {
+  background: #64748b;
+}
+:deep(.icon-download) {
+  background: #34d399;
 }
 :deep(.icon-if) {
   background: #ff9a56;
@@ -401,6 +419,23 @@ defineExpose({ zoomIn, zoomOut, fitAll });
 :deep(.icon-delay) {
   background: #f6d365;
   color: #111;
+}
+
+/* Missing canvas classes for tool node types whose icon class is based on type */
+:deep(.icon-triggerEvent) {
+  background: #f59e0b;
+}
+:deep(.icon-setAttribute) {
+  background: #8b5cf6;
+}
+:deep(.icon-loopElements) {
+  background: #22c55e;
+}
+:deep(.icon-switchFrame) {
+  background: #64748b;
+}
+:deep(.icon-handleDownload) {
+  background: #34d399;
 }
 
 /* 节点主体 */

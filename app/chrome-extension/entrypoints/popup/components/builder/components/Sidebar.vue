@@ -9,6 +9,9 @@
     </div>
 
     <!-- Flow -->
+    <div class="section-divider">
+      <span class="divider-label">Flow</span>
+    </div>
     <div class="nodes-section">
       <button
         v-for="n in filtered.Flow"
@@ -20,7 +23,7 @@
         :title="n.label"
       >
         <div class="btn-icon" :class="n.iconClass">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"></svg>
+          <component :is="iconComp(n.type)" />
         </div>
         <span class="btn-label">{{ n.label }}</span>
       </button>
@@ -38,7 +41,7 @@
         :title="n.label"
       >
         <div class="btn-icon" :class="n.iconClass">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"></svg>
+          <component :is="iconComp(n.type)" />
         </div>
         <span class="btn-label">{{ n.label }}</span>
       </button>
@@ -59,7 +62,7 @@
         :title="n.label"
       >
         <div class="btn-icon" :class="n.iconClass">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"></svg>
+          <component :is="iconComp(n.type)" />
         </div>
         <span class="btn-label">{{ n.label }}</span>
       </button>
@@ -80,7 +83,7 @@
         :title="n.label"
       >
         <div class="btn-icon" :class="n.iconClass">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"></svg>
+          <component :is="iconComp(n.type)" />
         </div>
         <span class="btn-label">{{ n.label }}</span>
       </button>
@@ -101,7 +104,7 @@
         :title="n.label"
       >
         <div class="btn-icon" :class="n.iconClass">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"></svg>
+          <component :is="iconComp(n.type)" />
         </div>
         <span class="btn-label">{{ n.label }}</span>
       </button>
@@ -113,6 +116,7 @@
 import { computed, ref } from 'vue';
 import type { Flow as FlowV2, NodeBase } from '@/entrypoints/background/record-replay/types';
 import { NODE_UI_LIST } from '@/entrypoints/popup/components/builder/model/ui-nodes';
+import { iconComp } from './nodes/node-util';
 
 const props = defineProps<{
   flow: FlowV2;
