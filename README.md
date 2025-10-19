@@ -227,7 +227,7 @@ query: I want to know what the search API for Xiaohongshu is and what the respon
 
 https://youtu.be/1hHKr7XKqnQ
 
-https://github.com/user-attachments/assets/063f44ae-1754-46b6-b141-5988c86e4d96
+https://github.com/user-attachments/assets/dc7e5cab-b9af-4b9a-97ce-18e4837318d9
 
 ### AI helps analyze your browsing history
 
@@ -235,28 +235,28 @@ query: Analyze my browsing history from the past month
 
 https://youtu.be/jf2UZfrR2Vk
 
-https://github.com/user-attachments/assets/e7a35118-e50e-4b1c-a790-0878aa2505ab
+https://github.com/user-attachments/assets/31b2e064-88c6-4adb-96d7-50748b826eae
 
 ### Web page conversation
 
 query: Translate and summarize the current web page
 https://youtu.be/FlJKS9UQyC8
 
-https://github.com/user-attachments/assets/08aa86aa-7706-4df2-b400-576e2c7fcc7f
+https://github.com/user-attachments/assets/aa8ef2a1-2310-47e6-897a-769d85489396
 
 ### AI automatically takes screenshots for you (web page screenshots)
 
 query: Take a screenshot of Hugging Face's homepage
 https://youtu.be/7ycK6iksWi4
 
-https://github.com/user-attachments/assets/b081e41b-6309-40d6-885b-0da01691b12e
+https://github.com/user-attachments/assets/65c6eee2-6366-493d-a3bd-2b27529ff5b3
 
 ### AI automatically takes screenshots for you (element screenshots)
 
 query: Capture the icon from Hugging Face's homepage
 https://youtu.be/ev8VivANIrk
 
-https://github.com/user-attachments/assets/25657076-b84b-4459-a72f-90f896f06364
+https://github.com/user-attachments/assets/d0cf9785-c2fe-4729-a3c5-7f2b8b96fe0c
 
 ### AI helps manage bookmarks
 
@@ -264,7 +264,7 @@ query: Add the current page to bookmarks and put it in an appropriate folder
 
 https://youtu.be/R_83arKmFTo
 
-https://github.com/user-attachments/assets/73c1ea26-65fb-4b5e-b537-e32fa9bcfa52
+https://github.com/user-attachments/assets/15a7d04c-0196-4b40-84c2-bafb5c26dfe0
 
 ### Automatically close web pages
 
@@ -272,7 +272,7 @@ query: Close all shadcn-related web pages
 
 https://youtu.be/2wzUT6eNVg4
 
-https://github.com/user-attachments/assets/ff160f48-58e0-4c76-a6b0-c4e1f91370c8
+https://github.com/user-attachments/assets/83de4008-bb7e-494d-9b0f-98325cfea592
 
 ## 🤝 Contributing
 
