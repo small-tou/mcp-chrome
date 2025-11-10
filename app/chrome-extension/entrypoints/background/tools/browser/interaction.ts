@@ -17,6 +17,10 @@ interface ClickToolParams {
   timeout?: number; // Timeout in milliseconds for waiting for the element or navigation
   frameId?: number; // Target frame for ref/selector resolution
   double?: boolean; // Perform double click when true
+  button?: 'left' | 'right' | 'middle';
+  bubbles?: boolean;
+  cancelable?: boolean;
+  modifiers?: { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean };
 }
 
 /**
@@ -35,6 +39,10 @@ class ClickTool extends BaseBrowserToolExecutor {
       waitForNavigation = false,
       timeout = TIMEOUTS.DEFAULT_WAIT * 5,
       frameId,
+      button,
+      bubbles,
+      cancelable,
+      modifiers,
     } = args;
 
     console.log(`Starting click operation with options:`, args);
@@ -70,6 +78,10 @@ class ClickTool extends BaseBrowserToolExecutor {
           waitForNavigation,
           timeout,
           double: args.double === true,
+          button,
+          bubbles,
+          cancelable,
+          modifiers,
         },
         frameId,
       );

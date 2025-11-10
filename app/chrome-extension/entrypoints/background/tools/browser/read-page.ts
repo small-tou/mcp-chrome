@@ -3,6 +3,7 @@ import { BaseBrowserToolExecutor } from '../base-browser';
 import { TOOL_NAMES } from 'chrome-mcp-shared';
 import { TOOL_MESSAGE_TYPES } from '@/common/message-types';
 import { ERROR_MESSAGES } from '@/common/constants';
+import { listMarkersForUrl } from '@/entrypoints/background/element-marker/element-marker-storage';
 
 interface ReadPageParams {
   filter?: 'interactive'; // when omitted, return all visible elements
@@ -25,6 +26,10 @@ class ReadPageTool extends BaseBrowserToolExecutor {
       const tab = tabs[0];
       if (!tab.id)
         return createErrorResponse(ERROR_MESSAGES.TAB_NOT_FOUND + ': Active tab has no ID');
+
+      // Load any user-marked elements for this URL (priority hints)
+      const currentUrl = String(tab.url || '');
+      const userMarkers = currentUrl ? await listMarkersForUrl(currentUrl) : [];
 
       // Inject helper in ISOLATED world to enable chrome.runtime messaging
       // Inject into all frames to support same-origin iframe operations
@@ -62,6 +67,14 @@ class ReadPageTool extends BaseBrowserToolExecutor {
           viewport: resp.viewport,
           refMapCount: refCount,
           sparse: false,
+          // Include user-marked elements to guide callers
+          markedElements: userMarkers.map((m) => ({
+            name: m.name,
+            selector: m.selector,
+            selectorType: m.selectorType || 'css',
+            urlMatch: { type: m.matchType, origin: m.origin, path: m.path },
+            source: 'marker',
+          })),
         };
 
         return {
@@ -80,13 +93,24 @@ class ReadPageTool extends BaseBrowserToolExecutor {
 
         if (fallback && fallback.success && Array.isArray(fallback.elements)) {
           const limited = fallback.elements.slice(0, 150);
+          // Merge user markers at the front, de-duplicated by selector
+          const markerElements = userMarkers.map((m) => ({
+            type: 'marker',
+            selector: m.selector,
+            text: m.name,
+            selectorType: m.selectorType || 'css',
+            isInteractive: true,
+            source: 'marker',
+          }));
+          const seen = new Set(markerElements.map((e) => e.selector));
+          const merged = [...markerElements, ...limited.filter((e: any) => !seen.has(e.selector))];
           const fallbackPayload = {
             success: true,
             fallbackUsed: true,
             fallbackSource: 'get_interactive_elements',
             reason: treeOk ? 'sparse_tree' : resp?.error || 'tree_failed',
             treeStats: { lines, refCount },
-            elements: limited,
+            elements: merged,
             count: fallback.elements.length,
             tips: standardTips,
           };

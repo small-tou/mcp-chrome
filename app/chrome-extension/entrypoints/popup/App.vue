@@ -254,6 +254,9 @@
         @cleanup-cache="cleanupCache"
         @clear-all-cache="clearAllCache"
       />
+
+      <!-- Element Marker Management Section -->
+      <ElementMarkerManagement />
     </div>
 
     <div class="footer">
@@ -299,6 +302,7 @@ import { getMessage } from '@/utils/i18n';
 import ConfirmDialog from './components/ConfirmDialog.vue';
 import ProgressIndicator from './components/ProgressIndicator.vue';
 import ModelCacheManagement from './components/ModelCacheManagement.vue';
+import ElementMarkerManagement from './components/ElementMarkerManagement.vue';
 import {
   DocumentIcon,
   DatabaseIcon,

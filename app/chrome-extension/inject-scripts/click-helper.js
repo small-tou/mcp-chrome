@@ -23,6 +23,7 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
     coordinates = null,
     ref = null,
     double = false,
+    options = {},
   ) {
     try {
       let element = null;
@@ -181,13 +182,13 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
         (elementInfo.clickMethod === 'selector' || elementInfo.clickMethod === 'ref')
       ) {
         if (double) {
-          simulateDomDoubleClick(element, clickX, clickY);
+          dispatchClickSequence(element, clickX, clickY, options, true);
         } else {
-          element.click();
+          dispatchClickSequence(element, clickX, clickY, options, false);
         }
       } else {
-        if (double) simulateDoubleClick(clickX, clickY);
-        else simulateClick(clickX, clickY);
+        if (double) simulateDoubleClick(clickX, clickY, options);
+        else simulateClick(clickX, clickY, options);
       }
 
       // Wait for navigation if needed
@@ -214,67 +215,90 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
    * @param {number} x - X coordinate relative to the viewport
    * @param {number} y - Y coordinate relative to the viewport
    */
-  function simulateClick(x, y) {
-    const clickEvent = new MouseEvent('click', {
-      view: window,
-      bubbles: true,
-      cancelable: true,
-      clientX: x,
-      clientY: y,
-    });
-
+  function simulateClick(x, y, options = {}) {
     const element = document.elementFromPoint(x, y);
-
-    if (element) {
-      element.dispatchEvent(clickEvent);
-    } else {
-      document.dispatchEvent(clickEvent);
-    }
+    if (!element) return;
+    dispatchClickSequence(element, x, y, options, false);
   }
 
   /**
    * Simulate a double click sequence at specific coordinates
    */
-  function simulateDoubleClick(x, y) {
-    simulateClick(x, y);
-    setTimeout(() => {
-      simulateClick(x, y);
-      const dbl = new MouseEvent('dblclick', {
-        view: window,
-        bubbles: true,
-        cancelable: true,
-        clientX: x,
-        clientY: y,
-      });
-      const el = document.elementFromPoint(x, y);
-      if (el) el.dispatchEvent(dbl);
-      else document.dispatchEvent(dbl);
-    }, 30);
+  function simulateDoubleClick(x, y, options = {}) {
+    const element = document.elementFromPoint(x, y);
+    if (!element) return;
+    dispatchClickSequence(element, x, y, options, true);
   }
 
   /**
    * Simulate double click using element when available
    */
-  function simulateDomDoubleClick(element, x, y) {
+  function simulateDomDoubleClick(element, x, y, options) {
+    dispatchClickSequence(element, x, y, options, true);
+  }
+
+  function normalizeMouseOpts(x, y, options = {}) {
+    const bubbles = options.bubbles !== false; // default true
+    const cancelable = options.cancelable !== false; // default true
+    const altKey = !!(options.modifiers && options.modifiers.altKey);
+    const ctrlKey = !!(options.modifiers && options.modifiers.ctrlKey);
+    const metaKey = !!(options.modifiers && options.modifiers.metaKey);
+    const shiftKey = !!(options.modifiers && options.modifiers.shiftKey);
+    const btn = String(options.button || 'left');
+    const button = btn === 'right' ? 2 : btn === 'middle' ? 1 : 0;
+    const buttons = btn === 'right' ? 2 : btn === 'middle' ? 4 : 1;
+    return {
+      bubbles,
+      cancelable,
+      altKey,
+      ctrlKey,
+      metaKey,
+      shiftKey,
+      button,
+      buttons,
+      clientX: x,
+      clientY: y,
+      view: window,
+    };
+  }
+
+  function dispatchClickSequence(element, x, y, options = {}, isDouble = false) {
+    const base = normalizeMouseOpts(x, y, options);
+    const down = new MouseEvent('mousedown', base);
+    const up = new MouseEvent('mouseup', base);
+    const click = new MouseEvent('click', base);
     try {
-      element.click();
+      element.dispatchEvent(down);
+    } catch {}
+    try {
+      element.dispatchEvent(up);
+    } catch {}
+    try {
+      element.dispatchEvent(click);
+    } catch {}
+    if (base.button === 2) {
+      // right button contextmenu
+      const ctx = new MouseEvent('contextmenu', base);
+      try {
+        element.dispatchEvent(ctx);
+      } catch {}
+    }
+    if (isDouble) {
+      // second sequence + dblclick
       setTimeout(() => {
-        element.click();
-        const rect = element.getBoundingClientRect();
-        const cx = x ?? rect.left + rect.width / 2;
-        const cy = y ?? rect.top + rect.height / 2;
-        const dbl = new MouseEvent('dblclick', {
-          view: window,
-          bubbles: true,
-          cancelable: true,
-          clientX: cx,
-          clientY: cy,
-        });
-        element.dispatchEvent(dbl);
+        try {
+          element.dispatchEvent(new MouseEvent('mousedown', base));
+        } catch {}
+        try {
+          element.dispatchEvent(new MouseEvent('mouseup', base));
+        } catch {}
+        try {
+          element.dispatchEvent(new MouseEvent('click', base));
+        } catch {}
+        try {
+          element.dispatchEvent(new MouseEvent('dblclick', base));
+        } catch {}
       }, 30);
-    } catch (e) {
-      // fallback to coordinates
-      simulateDoubleClick(x, y);
     }
   }
 
@@ -324,6 +348,12 @@ if (window.__CLICK_HELPER_INITIALIZED__) {
         request.coordinates,
         request.ref,
         !!request.double,
+        {
+          button: request.button,
+          bubbles: request.bubbles,
+          cancelable: request.cancelable,
+          modifiers: request.modifiers,
+        },
       )
         .then(sendResponse)
         .catch((error) => {

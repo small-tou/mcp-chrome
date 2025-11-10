@@ -6,6 +6,7 @@ import {
 import { initStorageManagerListener } from './storage-manager';
 import { cleanupModelCache } from '@/utils/semantic-similarity-engine';
 import { initRecordReplayListeners } from './record-replay';
+import { initElementMarkerListeners } from './element-marker';
 
 /**
  * Background script entry point
@@ -18,6 +19,8 @@ export default defineBackground(() => {
   initStorageManagerListener();
   // Record & Replay listeners
   initRecordReplayListeners();
+  // Element marker: context menu + CRUD listeners
+  initElementMarkerListeners();
 
   // Conditionally initialize semantic similarity engine if model cache exists
   initializeSemanticEngineIfCached()
