@@ -1,4 +1,4 @@
-import { IndexedDbStorage } from './storage/indexeddb-manager';
+import { IndexedDbStorage, ensureMigratedFromLocal } from './storage/indexeddb-manager';
 
 export type TriggerType = 'url' | 'contextMenu' | 'command' | 'dom';
 
@@ -37,14 +37,17 @@ export interface DomTrigger extends BaseTrigger {
 export type FlowTrigger = UrlTrigger | ContextMenuTrigger | CommandTrigger | DomTrigger;
 
 export async function listTriggers(): Promise<FlowTrigger[]> {
+  await ensureMigratedFromLocal();
   return await IndexedDbStorage.triggers.list();
 }
 
 export async function saveTrigger(t: FlowTrigger): Promise<void> {
+  await ensureMigratedFromLocal();
   await IndexedDbStorage.triggers.save(t);
 }
 
 export async function deleteTrigger(id: string): Promise<void> {
+  await ensureMigratedFromLocal();
   await IndexedDbStorage.triggers.delete(id);
 }
 

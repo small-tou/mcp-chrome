@@ -1,9 +1,14 @@
-// step-runner.ts — encapsulates execution of a single step with policies and plugins
+/**
+ * step-runner.ts
+ *
+ * Encapsulates execution of a single step with policies (retry, navigation wait) and plugins.
+ * Uses dependency-injected StepExecutorInterface for actual step execution, enabling
+ * seamless switching between legacy and ActionRegistry execution modes.
+ */
 
 import type { Flow, Step, StepClick } from '../../types';
 import { STEP_TYPES } from 'chrome-mcp-shared';
 import type { ExecCtx, ExecResult } from '../../nodes';
-import { executeStep } from '../../nodes';
 import { RunLogger } from '../logging/run-logger';
 import { withRetry } from '../policies/retry';
 import {
@@ -16,6 +21,7 @@ import { ENGINE_CONSTANTS } from '../constants';
 import { AfterScriptQueue } from './after-script-queue';
 import { PluginManager } from '../plugins/manager';
 import type { HookControl } from '../plugins/types';
+import type { StepExecutorInterface } from './step-executor';
 
 // Narrow error-like value used for overlay reporting
 interface ErrorLike {
@@ -28,14 +34,31 @@ function errorMessage(e: unknown): string {
   return String(e);
 }
 
+/**
+ * Environment dependencies for StepRunner.
+ * Injected by Scheduler to allow flexible configuration and testing.
+ */
 export interface StepRunEnv {
+  /** Unique identifier for this run */
   runId: string;
+  /** The flow being executed */
   flow: Flow;
+  /** Runtime variables */
   vars: Record<string, any>;
+  /** Run logger for recording execution events */
   logger: RunLogger;
+  /** Plugin manager for hooks (beforeStep, afterStep, onRetry, onError) */
   pluginManager: PluginManager;
+  /** Queue for deferred after-scripts */
   afterScripts: AfterScriptQueue;
-  getRemainingBudgetMs: () => number; // global deadline budget calculator
+  /** Returns remaining time budget from global deadline (ms), Infinity if no deadline */
+  getRemainingBudgetMs: () => number;
+  /**
+   * Step executor for actual step execution.
+   * Defaults to LegacyStepExecutor if not provided (for backwards compatibility).
+   * In future, Scheduler will inject ActionsStepExecutor or HybridStepExecutor.
+   */
+  stepExecutor: StepExecutorInterface;
 }
 
 export class StepRunner {
@@ -81,7 +104,24 @@ export class StepRunner {
     try {
       await withRetry(
         async () => {
-          const result = await executeStep(ctx, step);
+          // Execute step via injected executor (legacy, actions, or hybrid)
+          // tabId is expected to be set by Scheduler in ctx; fallback to active tab if missing
+          let tabId = ctx.tabId;
+          if (typeof tabId !== 'number') {
+            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+            tabId = tabs?.[0]?.id;
+          }
+          if (typeof tabId !== 'number') {
+            throw new Error('No active tab found for step execution');
+          }
+
+          const execResult = await this.env.stepExecutor.execute(ctx, step, {
+            tabId,
+            runId: this.env.runId,
+            pushLog: (entry) => this.env.logger.push(entry as any),
+            remainingBudgetMs: this.env.getRemainingBudgetMs(),
+          });
+          const result = execResult.result;
           const remainingBudget = this.env.getRemainingBudgetMs();
           if (step.type === STEP_TYPES.CLICK || step.type === STEP_TYPES.DBLCLICK) {
             const after = step.after ?? ({} as NonNullable<StepClick['after']>);

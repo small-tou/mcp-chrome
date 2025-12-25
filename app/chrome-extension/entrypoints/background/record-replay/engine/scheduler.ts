@@ -21,6 +21,15 @@ import { StepRunner } from './runners/step-runner';
 import { ControlFlowRunner } from './runners/control-flow-runner';
 import { SubflowRunner } from './runners/subflow-runner';
 import { ENGINE_CONSTANTS, LOG_STEP_IDS } from './constants';
+import {
+  DEFAULT_EXECUTION_MODE_CONFIG,
+  createActionsOnlyConfig,
+  createHybridConfig,
+  type ExecutionMode,
+  type ExecutionModeConfig,
+} from './execution-mode';
+import { createExecutor, type StepExecutorInterface } from './runners/step-executor';
+import { createReplayActionRegistry } from '../actions/handlers';
 
 export interface RunOptions {
   tabTarget?: 'current' | 'new';
@@ -32,24 +41,118 @@ export interface RunOptions {
   args?: Record<string, any>;
   startNodeId?: string;
   plugins?: RunPlugin[];
+
+  /**
+   * Step execution mode switch.
+   * - 'legacy': Use existing nodes/executeStep (default, safest)
+   * - 'hybrid': Try ActionRegistry first, fall back to legacy
+   * - 'actions': Use ActionRegistry exclusively (strict mode)
+   */
+  executionMode?: ExecutionMode;
+
+  /**
+   * Hybrid mode only: allowlist of step types executed via ActionRegistry.
+   * - undefined: use MINIMAL_HYBRID_ACTION_TYPES (safest default)
+   * - []: disable allowlist, fall back to MIGRATED_ACTION_TYPES policy
+   * - ['fill', 'key', ...]: only these types use actions
+   */
+  actionsAllowlist?: string[];
+
+  /**
+   * Hybrid mode only: denylist of step types forced to legacy.
+   * When omitted, createHybridConfig defaults to LEGACY_ONLY_TYPES.
+   */
+  legacyOnlyTypes?: string[];
 }
 
+/**
+ * Type guard for ExecutionMode
+ */
+function isExecutionMode(value: unknown): value is ExecutionMode {
+  return value === 'legacy' || value === 'hybrid' || value === 'actions';
+}
+
+/**
+ * Convert array to Set<string>, filtering invalid values
+ */
+function toStringSet(value: unknown): Set<string> {
+  const result = new Set<string>();
+  if (!Array.isArray(value)) return result;
+  for (const item of value) {
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (trimmed) result.add(trimmed);
+    }
+  }
+  return result;
+}
+
+/**
+ * Build ExecutionModeConfig from RunOptions.
+ * Defaults to legacy mode if executionMode is not specified.
+ *
+ * Note: Only array inputs for actionsAllowlist/legacyOnlyTypes are accepted.
+ * Non-array values are ignored to prevent accidental misconfiguration
+ * (e.g., passing a string instead of array would unexpectedly widen the allowlist).
+ */
+function buildExecutionModeConfig(options: RunOptions): ExecutionModeConfig {
+  const mode: ExecutionMode = isExecutionMode(options.executionMode)
+    ? options.executionMode
+    : DEFAULT_EXECUTION_MODE_CONFIG.mode;
+
+  if (mode === 'hybrid') {
+    const overrides: Partial<ExecutionModeConfig> = {};
+    // Only apply override if it's a valid array
+    // This prevents misconfiguration from widening the actions scope
+    if (Array.isArray(options.actionsAllowlist)) {
+      overrides.actionsAllowlist = toStringSet(options.actionsAllowlist);
+    }
+    if (Array.isArray(options.legacyOnlyTypes)) {
+      overrides.legacyOnlyTypes = toStringSet(options.legacyOnlyTypes);
+    }
+    return createHybridConfig(overrides);
+  }
+
+  if (mode === 'actions') {
+    return createActionsOnlyConfig();
+  }
+
+  // Default: legacy mode
+  return { ...DEFAULT_EXECUTION_MODE_CONFIG };
+}
+
+/**
+ * ExecutionOrchestrator manages the lifecycle of a flow execution.
+ *
+ * Architecture:
+ * - Creates StepExecutor based on ExecutionModeConfig (legacy by default)
+ * - Injects StepExecutor into StepRunner for step execution
+ * - Manages tabId and passes it through ExecCtx
+ * - Handles DAG traversal, control flow, and cleanup
+ */
 class ExecutionOrchestrator {
-  // moved to ENGINE_CONSTANTS.MAX_ITERATIONS
-  private runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  private startAt = Date.now();
-  private logger = new RunLogger(this.runId);
-  // Initialized in constructor to avoid using `this.options` before it's set
-  private pluginManager: PluginManager;
+  private readonly runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  private readonly startAt = Date.now();
+  private readonly logger = new RunLogger(this.runId);
+  private readonly pluginManager: PluginManager;
+  private readonly afterScripts = new AfterScriptQueue(this.logger);
+
+  // Execution mode configuration (defaults to legacy for safety)
+  private readonly executionModeConfig: ExecutionModeConfig;
+  private readonly stepExecutor: StepExecutorInterface;
+
+  // Runtime state
   private vars: Record<string, any> = Object.create(null);
+  private tabId: number | null = null;
   private deadline = 0;
   private networkCaptureStarted = false;
   private paused = false;
   private failed = 0;
-  private executed = 0; // Count of actually executed steps (not skipped/trigger)
+  private executed = 0;
   private steps: Step[] = [];
   private prepareError: RunResult | null = null;
-  private afterScripts = new AfterScriptQueue(this.logger);
+
+  // Runners
   private stepRunner: StepRunner;
   private controlFlowRunner!: ControlFlowRunner;
   private subflowRunner!: SubflowRunner;
@@ -58,13 +161,32 @@ class ExecutionOrchestrator {
     private flow: Flow,
     private options: RunOptions = {},
   ) {
-    for (const v of flow.variables || []) if (v.default !== undefined) this.vars[v.key] = v.default;
+    // Initialize variables from flow defaults and args
+    for (const v of flow.variables || []) {
+      if (v.default !== undefined) this.vars[v.key] = v.default;
+    }
     if (options.args) Object.assign(this.vars, options.args);
+
+    // Set up global deadline
     const globalTimeout = Math.max(0, Number(options.timeoutMs || 0));
     this.deadline = globalTimeout > 0 ? this.startAt + globalTimeout : 0;
+
+    // Initialize plugin manager
     this.pluginManager = new PluginManager(
       options.plugins && options.plugins.length ? options.plugins : [breakpointPlugin()],
     );
+
+    // Create step executor based on execution mode configuration
+    // Default to legacy mode for maximum safety during migration
+    this.executionModeConfig = buildExecutionModeConfig(options);
+
+    // Only create ActionRegistry when needed (hybrid or actions mode)
+    // This avoids unnecessary initialization overhead in legacy mode
+    const registry =
+      this.executionModeConfig.mode === 'legacy' ? undefined : createReplayActionRegistry();
+    this.stepExecutor = createExecutor(this.executionModeConfig, registry);
+
+    // Initialize step runner with injected executor
     this.stepRunner = new StepRunner({
       runId: this.runId,
       flow: this.flow,
@@ -74,6 +196,7 @@ class ExecutionOrchestrator {
       afterScripts: this.afterScripts,
       getRemainingBudgetMs: () =>
         this.deadline > 0 ? Math.max(0, this.deadline - Date.now()) : Number.POSITIVE_INFINITY,
+      stepExecutor: this.stepExecutor,
     });
   }
 
@@ -121,6 +244,8 @@ class ExecutionOrchestrator {
       startUrl: this.options.startUrl || derivedStartUrl,
       refresh: this.options.refresh,
     });
+    // Capture tabId for use in ExecCtx
+    this.tabId = ensured?.tabId ?? null;
 
     // register run state
     await runState.restore();
@@ -426,7 +551,14 @@ class ExecutionOrchestrator {
         ? this.options.startNodeId
         : findFirstExecutableRoot();
     let guard = 0;
-    const ctx: ExecCtx = { vars: this.vars, logger: (e: RunLogEntry) => this.logger.push(e) };
+
+    // Create execution context with tabId from ensureTab
+    // tabId is managed by Scheduler and may be updated by openTab/switchTab actions
+    const ctx: ExecCtx = {
+      vars: this.vars,
+      tabId: this.tabId ?? undefined,
+      logger: (e: RunLogEntry) => this.logger.push(e),
+    };
     if (currentId) {
       try {
         await this.logger.overlayAppend(

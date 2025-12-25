@@ -1,9 +1,10 @@
 import type { Flow, RunRecord, NodeBase, Edge } from './types';
 import { stepsToDAG, type RRNode, type RREdge } from 'chrome-mcp-shared';
 import { NODE_TYPES } from '@/common/node-types';
-import { IndexedDbStorage } from './storage/indexeddb-manager';
+import { IndexedDbStorage, ensureMigratedFromLocal } from './storage/indexeddb-manager';
 
-// design note: simple local storage backed store for flows and run records
+// Design note: IndexedDB-backed store for flows and run records.
+// Includes lazy migration from chrome.storage.local for backwards compatibility.
 
 // Validate if a type string is a valid NodeType
 const VALID_NODE_TYPES = new Set<string>(Object.values(NODE_TYPES));
@@ -42,10 +43,22 @@ function filterValidEdges(edges: Edge[], nodeIds: Set<string>): Edge[] {
  * Normalize flow before saving: ensure nodes/edges exist for scheduler compatibility.
  * Only generates DAG from steps if nodes are missing or empty.
  * Preserves existing nodes/edges to avoid overwriting user edits.
+ *
+ * Also validates edges: removes edges referencing non-existent nodes to prevent
+ * runtime errors in scheduler's topoOrder calculation.
  */
 function normalizeFlowForSave(flow: Flow): Flow {
   const hasNodes = Array.isArray(flow.nodes) && flow.nodes.length > 0;
   if (hasNodes) {
+    // Validate edges even when nodes exist (e.g., imported flows may have invalid edges)
+    const nodeIds = new Set(flow.nodes!.map((n) => n.id));
+    if (Array.isArray(flow.edges) && flow.edges.length > 0) {
+      const validEdges = filterValidEdges(flow.edges, nodeIds);
+      if (validEdges.length !== flow.edges.length) {
+        // Some edges were invalid, return cleaned flow
+        return { ...flow, edges: validEdges };
+      }
+    }
     return flow;
   }
 
@@ -115,6 +128,7 @@ async function lazyNormalize(flow: Flow): Promise<Flow> {
 }
 
 export async function listFlows(): Promise<Flow[]> {
+  await ensureMigratedFromLocal();
   const flows = await IndexedDbStorage.flows.list();
   // Check if any flows need normalization
   const needsNorm = flows.some(needsNormalization);
@@ -134,6 +148,7 @@ export async function listFlows(): Promise<Flow[]> {
 }
 
 export async function getFlow(flowId: string): Promise<Flow | undefined> {
+  await ensureMigratedFromLocal();
   const flow = await IndexedDbStorage.flows.get(flowId);
   if (!flow) return undefined;
   // Lazy normalize if needed
@@ -144,19 +159,23 @@ export async function getFlow(flowId: string): Promise<Flow | undefined> {
 }
 
 export async function saveFlow(flow: Flow): Promise<void> {
+  await ensureMigratedFromLocal();
   const normalizedFlow = normalizeFlowForSave(flow);
   await IndexedDbStorage.flows.save(normalizedFlow);
 }
 
 export async function deleteFlow(flowId: string): Promise<void> {
+  await ensureMigratedFromLocal();
   await IndexedDbStorage.flows.delete(flowId);
 }
 
 export async function listRuns(): Promise<RunRecord[]> {
+  await ensureMigratedFromLocal();
   return await IndexedDbStorage.runs.list();
 }
 
 export async function appendRun(record: RunRecord): Promise<void> {
+  await ensureMigratedFromLocal();
   const runs = await IndexedDbStorage.runs.list();
   runs.push(record);
   // Trim to keep last 10 runs per flowId to avoid unbounded growth
@@ -181,10 +200,12 @@ export async function appendRun(record: RunRecord): Promise<void> {
 }
 
 export async function listPublished(): Promise<PublishedFlowInfo[]> {
+  await ensureMigratedFromLocal();
   return await IndexedDbStorage.published.list();
 }
 
 export async function publishFlow(flow: Flow, slug?: string): Promise<PublishedFlowInfo> {
+  await ensureMigratedFromLocal();
   const info: PublishedFlowInfo = {
     id: flow.id,
     slug: slug || toSlug(flow.name) || flow.id,
@@ -197,6 +218,7 @@ export async function publishFlow(flow: Flow, slug?: string): Promise<PublishedF
 }
 
 export async function unpublishFlow(flowId: string): Promise<void> {
+  await ensureMigratedFromLocal();
   await IndexedDbStorage.published.delete(flowId);
 }
 
@@ -219,20 +241,79 @@ export async function exportAllFlows(): Promise<string> {
   return JSON.stringify({ flows }, null, 2);
 }
 
+/**
+ * Import flows from JSON string.
+ *
+ * Supported formats:
+ * 1. Array of flows: [...flows]
+ * 2. Object with flows array: { flows: [...] }
+ * 3. Single flow with steps: { id, steps: [...] }
+ * 4. Single flow with nodes (new format): { id, nodes: [...], edges?: [...] }
+ *
+ * Flows are normalized on save (steps → nodes if needed).
+ */
 export async function importFlowFromJson(json: string): Promise<Flow[]> {
+  await ensureMigratedFromLocal();
   const parsed = JSON.parse(json);
-  const flowsToImport: Flow[] = Array.isArray(parsed?.flows)
-    ? parsed.flows
-    : parsed?.id && parsed?.steps
-      ? [parsed as Flow]
-      : [];
-  if (!flowsToImport.length) throw new Error('invalid flow json');
+
+  // Detect candidates from various formats
+  const candidates: unknown[] = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.flows)
+      ? parsed.flows
+      : parsed?.id && (Array.isArray(parsed?.steps) || Array.isArray(parsed?.nodes))
+        ? [parsed]
+        : [];
+
+  if (!candidates.length) {
+    throw new Error('invalid flow json: no flows found');
+  }
+
   const nowIso = new Date().toISOString();
+  const flowsToImport: Flow[] = [];
+
+  for (const raw of candidates) {
+    if (!raw || typeof raw !== 'object') {
+      throw new Error('invalid flow json: flow must be an object');
+    }
+
+    const f = raw as Record<string, unknown>;
+    const id = String(f.id || '').trim();
+    if (!id) {
+      throw new Error('invalid flow json: missing id');
+    }
+
+    // Normalize fields with sensible defaults
+    const name = typeof f.name === 'string' && f.name.trim() ? f.name : id;
+    const version = Number.isFinite(Number(f.version)) ? Number(f.version) : 1;
+    const steps = Array.isArray(f.steps) ? f.steps : [];
+
+    // Handle meta with proper timestamps
+    const existingMeta =
+      f.meta && typeof f.meta === 'object' ? (f.meta as Record<string, unknown>) : {};
+    const createdAt = typeof existingMeta.createdAt === 'string' ? existingMeta.createdAt : nowIso;
+
+    const flow: Flow = {
+      ...(f as object),
+      id,
+      name,
+      version,
+      steps,
+      meta: {
+        ...existingMeta,
+        createdAt,
+        updatedAt: nowIso,
+      },
+    } as Flow;
+
+    flowsToImport.push(flow);
+  }
+
+  // Save all flows (normalize on save)
   for (const f of flowsToImport) {
-    const meta = f.meta ?? (f.meta = { createdAt: nowIso, updatedAt: nowIso } as any);
-    meta.updatedAt = nowIso;
     await saveFlow(f);
   }
+
   return flowsToImport;
 }
 
@@ -250,13 +331,16 @@ export interface FlowSchedule {
 }
 
 export async function listSchedules(): Promise<FlowSchedule[]> {
+  await ensureMigratedFromLocal();
   return await IndexedDbStorage.schedules.list();
 }
 
 export async function saveSchedule(s: FlowSchedule): Promise<void> {
+  await ensureMigratedFromLocal();
   await IndexedDbStorage.schedules.save(s);
 }
 
 export async function removeSchedule(scheduleId: string): Promise<void> {
+  await ensureMigratedFromLocal();
   await IndexedDbStorage.schedules.delete(scheduleId);
 }

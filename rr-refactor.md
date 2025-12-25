@@ -12,6 +12,59 @@
 
 ---
 
+## 整体进度概览
+
+| 阶段                   | 状态      | 完成时间 | 主要内容                                                       |
+| ---------------------- | --------- | -------- | -------------------------------------------------------------- |
+| Phase 1.1 Action 系统  | ✅ 完成   | -        | 27 种 Action 类型定义、执行器注册表                            |
+| Phase 1.2 选择器引擎   | ✅ 完成   | -        | 6 种策略、指纹验证、Shadow DOM 支持                            |
+| Phase 1.3 数据模型统一 | 🔄 进行中 | -        | P0-P3 完成，P4 待实施                                          |
+| - M1 低风险接线        | ✅ 完成   | 2025-12  | StepRunner 依赖注入、tabId 管理                                |
+| - M2 可控启用 hybrid   | ✅ 完成   | 2025-12  | 执行模式配置、最小 allowlist                                   |
+| - M2.1 双重策略修复    | ✅ 完成   | 2025-12  | skipRetry/skipNavWait 策略跳过                                 |
+| - P1.0 存储层统一      | ✅ 完成   | 2025-12  | ensureMigratedFromLocal、importFlowFromJson                    |
+| - M3-core 契约测试     | ✅ 完成   | 2025-12  | 42 个测试（adapter-policy + step-executor + session-dag-sync） |
+| - P2 录制链路迁移      | ✅ 完成   | 2025-12  | 增量式 DAG 同步、双写方案                                      |
+| - P4 清理旧类型        | ⏳ 待实施 | -        | 删除 Step 联合类型、Flow.steps 字段                            |
+| Phase 2-7              | ⏳ 待实施 | -        | 录制系统、回放引擎、Builder、高级功能                          |
+
+**当前测试状态**: 197 个测试全部通过
+
+---
+
+## 下一步任务建议（供接手者参考）
+
+### 优先级 1: M3-full 完整集成测试
+
+验证 hybrid 模式下各类型行为一致性，特别关注：
+
+- aria selector 定位
+- script when:'after' defer 执行时机
+- control-flow 条件求值
+- openTab/switchTab 后 ctx.tabId 更新
+
+### 优先级 2: P4 清理旧类型
+
+- 删除 `types.ts` 中的 `Step` 联合类型
+- 删除 `Flow.steps` 字段（或移至 `legacy-types.ts`）
+- 更新 UI Builder 保存格式
+
+### 优先级 3: UI 刷新机制修复
+
+IndexedDB 迁移后，popup/sidepanel 不再监听 chrome.storage.local 变化：
+
+- 需要新的变更通知机制（可能通过 chrome.runtime.sendMessage）
+- 或改用 IndexedDB observer / BroadcastChannel
+
+### 优先级 4: 录制期实时 DAG 展示（可选）
+
+当前 DAG 只在内存态，可考虑：
+
+- 将 nodes/edges 包含在 timeline 广播中
+- UI 端实时渲染 DAG 视图
+
+---
+
 ## 实施进度
 
 ### 已完成
@@ -50,12 +103,12 @@
 
 #### Phase 1.3: 数据模型统一 🔄
 
-**当前状态**：P0、P3 已完成。P1、P2、P4 待后续迭代。
+**当前状态**：P0、P1、P2、P3 已完成。P4 待后续迭代。
 
 - P0 ✅：录制产物转换为 DAG，可直接回放
+- P1 ✅：存储层统一（ensureMigratedFromLocal、importFlowFromJson 多格式支持）
+- P2 ✅：录制链路迁移（增量式 DAG 同步，双写方案）
 - P3 ✅：22 个 Action Handlers 完整实现 + Scheduler 集成架构设计完成
-- P1 ⏳：存储层统一（IndexedDB schema、lazy normalize）
-- P2 ⏳：录制链路迁移到 Action
 - P4 ⏳：清理旧 Step 类型
 
 **核心问题**：录制与回放数据格式不一致
@@ -99,20 +152,139 @@
 - [x] 添加 `filterValidEdges` 校验旧 edges 有效性，避免 topoOrder 崩溃
 - 涉及文件：`packages/shared/src/rr-graph.ts`、`flow-store.ts`
 
-**P1: 存储层统一（单一真源）**
+**P1: 存储层统一（单一真源）** ✅
 
 - [x] `flow-store.ts` 读写逻辑适配新 Flow（P0 已完成）
-- [ ] `importFlowFromJson` 支持新旧格式自动识别（P0 已间接支持：导入后保存会触发 normalize）
-- [ ] 考虑 IndexedDB schema 升级策略，这里不用考虑，因为还没有任何人使用，没有任何数据产生，直接升级即可
-- [ ] 迁移场景：`ensureMigratedFromLocal()` 需要做 lazy normalize（当前迁移不走 saveFlow）
-- 涉及文件：`flow-store.ts`、`storage/indexeddb-manager.ts`
+- [x] `importFlowFromJson` 支持 4 种格式自动识别（数组、{flows:[]}、单 flow with steps、单 flow with nodes）
+- [x] `ensureMigratedFromLocal()` 调用已添加到所有存储入口点（listFlows, getFlow, saveFlow 等）
+- [x] `normalizeFlowForSave` 增加 edges 有效性校验（过滤指向不存在节点的边）
+- 涉及文件：`flow-store.ts`、`trigger-store.ts`
 
-**P2: 录制链路迁移**
+**P2: 录制链路迁移 - 增量式 DAG 同步** ✅
 
-- [ ] `flow-builder.ts` 改为写 `nodes: AnyAction[]`
-- [ ] `content-message-handler.ts` 接收 Step 后转换为 Action
-- [ ] 可选：修改 `recorder.js` 直接发送 Action
-- 涉及文件：`flow-builder.ts`、`content-message-handler.ts`、`session-manager.ts`
+采用"双写"方案：recorder.js 继续发送 Steps，background 在 `appendSteps` 时同步生成 nodes/edges。
+
+- [x] `session-manager.ts:appendSteps` 增量生成 DAG
+  - 新 step → 创建 node + edge（从前一个 node）
+  - upsert step → 更新 node.config 和 node.type
+  - 维护 session 级缓存：stepIndexMap、nodeIndexMap、edgeSeq
+- [x] 不变式检查：nodes.length === steps.length 且 edges.length === max(0, steps.length-1) 且 last edge → last step
+- [x] 违反不变式时 fallback 全量 `stepsToDAG` 重建
+- [x] 类型安全：unknown step type 降级到 'script' 并输出警告日志
+- [x] 契约测试：15 个测试覆盖 DAG 同步场景（`session-dag-sync.contract.test.ts`）
+- 涉及文件：`recording/session-manager.ts`
+
+##### P2 详细实现说明
+
+**核心改动位置**: `app/chrome-extension/entrypoints/background/record-replay/recording/session-manager.ts`
+
+**新增私有字段**:
+
+```typescript
+// Session-level caches for incremental DAG sync (cleared on session start/stop)
+private stepIndexMap: Map<string, number> = new Map();  // stepId → 数组索引
+private nodeIndexMap: Map<string, number> = new Map();  // nodeId → 数组索引
+private edgeSeq: number = 0;  // 单调递增的 edge id 序号
+```
+
+**Session 生命周期管理**:
+
+- `startSession()`: 清理所有缓存，调用 `rebuildCaches()` 初始化
+- `stopSession()`: 清理所有缓存
+
+**增量 DAG 同步逻辑** (`appendSteps` 方法):
+
+```typescript
+// 1. 初始化数组（如果缺失）
+if (!Array.isArray(f.steps)) f.steps = [];
+if (!Array.isArray(f.nodes)) f.nodes = [];
+if (!Array.isArray(f.edges)) f.edges = [];
+
+// 2. 检查不变式，违反则 fallback 全量重建
+if (!this.checkDagInvariant(f.steps, nodes, edges)) {
+  this.rebuildDag();
+}
+
+// 3. 处理每个 step
+for (const step of steps) {
+  if (this.stepIndexMap.has(step.id)) {
+    // Upsert: 更新 node.config 和 node.type
+    nodes[nodeIdx] = {
+      ...nodes[nodeIdx],
+      type: this.toNodeType(step.type),
+      config: mapStepToNodeConfig(step),
+    };
+  } else {
+    // Append: 创建 node + edge
+    nodes.push({
+      id: step.id,
+      type: this.toNodeType(step.type),
+      config: mapStepToNodeConfig(step),
+    });
+    if (prevStepId) {
+      edges.push({
+        id: `e_${this.edgeSeq++}_${prevStepId}_${step.id}`,
+        from: prevStepId,
+        to: step.id,
+        label: EDGE_LABELS.DEFAULT,
+      });
+    }
+  }
+}
+
+// 4. 最终不变式检查
+if (needsRebuild || !this.checkDagInvariant(f.steps, nodes, edges)) {
+  this.rebuildDag();
+}
+```
+
+**不变式检查** (`checkDagInvariant` 方法):
+
+```typescript
+private checkDagInvariant(steps: Step[], nodes: NodeBase[], edges: Edge[]): boolean {
+  const stepCount = steps.length;
+  const expectedEdgeCount = Math.max(0, stepCount - 1);
+
+  // 1. nodes 数量必须等于 steps 数量
+  if (nodes.length !== stepCount) return false;
+
+  // 2. edges 数量必须等于 steps.length - 1（线性链）
+  if (edges.length !== expectedEdgeCount) return false;
+
+  // 3. 最后一条 edge 必须指向最后一个 step
+  if (edges.length > 0 && steps.length > 0) {
+    const lastEdge = edges[edges.length - 1];
+    const lastStepId = steps[steps.length - 1]?.id;
+    if (lastEdge.to !== lastStepId) return false;
+  }
+
+  return true;
+}
+```
+
+**类型安全** (`toNodeType` 方法):
+
+```typescript
+private toNodeType(stepType: string): NodeBase['type'] {
+  if (VALID_NODE_TYPES.has(stepType)) {
+    return stepType as NodeBase['type'];
+  }
+  console.warn(`[RecordingSession] Unknown step type "${stepType}", falling back to "script"`);
+  return NODE_TYPES.SCRIPT;
+}
+```
+
+**测试覆盖** (`tests/record-replay/session-dag-sync.contract.test.ts`):
+
+- 首个 step 创建 node（无 edge）
+- 后续 step 创建 node + edge
+- 批量 step 正确链接
+- upsert 更新 node config
+- upsert 保留 edges
+- 不变式处理（nodes 缺失、edges 缺失、edges 指向错误）
+- session 生命周期（start/stop 清理缓存）
+- 类型转换（有效类型、未知类型降级）
+- edge id 唯一性和单调序列
 
 **P3: 回放引擎适配** ✅
 
@@ -280,26 +452,428 @@ export {
 } from './handlers';
 ```
 
-##### 后续接入步骤（未完成）
+##### 后续接入步骤
 
-1. **修改 StepRunner 依赖注入 StepExecutorInterface**
-   - 当前 `StepRunner` 直接调用 `executeStep`（`step-runner.ts:84`）
-   - 需要改为通过 `StepExecutorInterface.execute()` 调用
-   - 由 `Scheduler` 创建 `ActionRegistry` + `createExecutor` 并注入
+**M1: 低风险接线（已完成 ✅）**
 
-2. **解决双重策略问题**
-   - StepRunner 有 retry/timeout/nav-wait 策略（`step-runner.ts:82,106`）
-   - ActionRegistry 也有 retry/timeout 策略（`registry.ts:462,527`）
-   - 需明确唯一权威：使用 `skipActionsRetry/skipActionsNavWait` 配置控制
+1. ✅ **修改 StepRunner 依赖注入 StepExecutorInterface**
+   - `StepRunner` 现在通过注入的 `StepExecutorInterface.execute()` 调用
+   - `Scheduler` 创建 `createExecutor(config)` 并注入到 `StepRunner`
+   - 默认使用 `legacy` 模式，保持原有行为不变
 
-3. **tabId 管理**
-   - 当前 ExecCtx 不携带 tabId
-   - openTab/switchTab 后需要更新 tabId
-   - 建议在 ExecCtx 中添加 `tabId` 字段并在 tab 切换时同步
+2. ✅ **tabId 管理**
+   - `ExecCtx` 已添加 `tabId?: number` 字段
+   - `Scheduler` 从 `ensureTab()` 捕获 tabId 并传入 `ExecCtx`
+   - `StepRunner` 优先使用 `ctx.tabId`，fallback 到 active tab 查询
 
-4. **集成测试**
-   - 在 hybrid 模式下验证各类型行为一致性
-   - 特别关注：aria selector、script when:'after' defer、control-flow 条件求值
+3. ✅ **双重策略问题（设计决策 + 实现）**
+   - retry/nav-wait 策略：`StepRunner` 作为权威
+   - `ExecutionModeConfig.skipActionsRetry/skipActionsNavWait` 默认为 true
+   - 实现机制：
+     - `adapter.ts`: `skipRetry=true` 时移除 `action.policy.retry`
+     - `adapter.ts`: `skipNavWait=true` 时设置 `ctx.execution.skipNavWait`
+     - `click.ts/navigate.ts`: 检查 `ctx.execution?.skipNavWait` 跳过内部 nav-wait
+   - 注意：ActionRegistry timeout 保留（提供 per-action 超时保护）
+
+##### M1 详细实现说明
+
+**修改文件清单**:
+| 文件 | 改动内容 |
+|------|----------|
+| `nodes/types.ts` | `ExecCtx` 添加 `tabId?: number` 字段 |
+| `engine/runners/step-executor.ts` | 实现 `StepExecutorInterface`、`LegacyStepExecutor`、`ActionsStepExecutor`、`HybridStepExecutor`、`createExecutor()` 工厂 |
+| `engine/runners/step-runner.ts` | 构造函数接受 `StepExecutorInterface`，`executeNode()` 改为调用注入的执行器 |
+| `engine/scheduler.ts` | `runFlow()` 创建执行器并注入到 `StepRunner` |
+
+**StepExecutorInterface 定义**:
+
+```typescript
+export interface StepExecutionOptions {
+  tabId: number;
+  runId?: string;
+  pushLog?: (entry: unknown) => void;
+}
+
+export interface StepExecutionResult {
+  executor: 'legacy' | 'actions';
+  result: ExecResult;
+}
+
+export interface StepExecutorInterface {
+  execute(ctx: ExecCtx, step: Step, options: StepExecutionOptions): Promise<StepExecutionResult>;
+  supports(stepType: string): boolean;
+}
+```
+
+**执行器创建流程**:
+
+```typescript
+// scheduler.ts
+const modeConfig = buildExecutionModeConfig(options);
+const registry = modeConfig.mode !== 'legacy' ? createReplayActionRegistry() : undefined;
+const stepExecutor = createExecutor(modeConfig, registry);
+const runner = new StepRunner(stepExecutor /* ... */);
+```
+
+**M2: 可控启用 hybrid（已完成 ✅）**
+
+1. ✅ **execution-mode.ts 新增最小 allowlist**
+   - `MINIMAL_HYBRID_ACTION_TYPES`: fill/key/scroll/drag/wait/delay/screenshot/assert
+   - 排除高风险类型（navigate/click/tab 管理）避免策略冲突
+   - `createHybridConfig()` 默认使用最小 allowlist
+
+2. ✅ **scheduler.ts 支持执行模式切换**
+   - `RunOptions` 新增 `executionMode/actionsAllowlist/legacyOnlyTypes` 字段
+   - `buildExecutionModeConfig()` 根据选项构建配置
+   - 只在 hybrid/actions 模式下创建 `ActionRegistry`
+   - 健壮性改进：只接受数组输入，防止误配置
+
+3. ⏳ **openTab/switchTab 后同步更新 `ctx.tabId`**（M3 验证时完善）
+
+**使用方式**:
+
+```typescript
+// 默认 legacy（不传 executionMode）
+runFlow(flow, {});
+
+// 启用 hybrid（最小 allowlist）
+runFlow(flow, { executionMode: 'hybrid' });
+
+// 自定义 allowlist
+runFlow(flow, { executionMode: 'hybrid', actionsAllowlist: ['fill', 'key'] });
+
+// 使用 MIGRATED_ACTION_TYPES（传空数组）
+runFlow(flow, { executionMode: 'hybrid', actionsAllowlist: [] });
+```
+
+##### M2 详细实现说明
+
+**修改文件清单**:
+| 文件 | 改动内容 |
+|------|----------|
+| `engine/execution-mode.ts` | 新增 `MINIMAL_HYBRID_ACTION_TYPES`、`createHybridConfig()`、`createActionsOnlyConfig()` |
+| `engine/scheduler.ts` | `RunOptions` 扩展、`buildExecutionModeConfig()` 实现 |
+
+**MINIMAL_HYBRID_ACTION_TYPES 定义**:
+
+```typescript
+export const MINIMAL_HYBRID_ACTION_TYPES = new Set<string>([
+  'fill', // 低风险：表单填充
+  'key', // 低风险：键盘输入
+  'scroll', // 低风险：滚动
+  'drag', // 低风险：拖拽
+  'wait', // 低风险：等待条件
+  'delay', // 低风险：延迟
+  'screenshot', // 低风险：截图
+  'assert', // 低风险：断言
+]);
+// 排除高风险：navigate（导航）、click（点击）、tab 管理
+```
+
+**RunOptions 扩展**:
+
+```typescript
+export interface RunOptions {
+  // ... existing fields
+  executionMode?: ExecutionMode; // 'legacy' | 'hybrid' | 'actions'
+  actionsAllowlist?: string[]; // 允许使用 actions 的类型（hybrid 模式）
+  legacyOnlyTypes?: string[]; // 强制使用 legacy 的类型
+}
+```
+
+**buildExecutionModeConfig 实现**:
+
+```typescript
+function buildExecutionModeConfig(options: RunOptions): ExecutionModeConfig {
+  const mode = isExecutionMode(options.executionMode) ? options.executionMode : 'legacy';
+
+  if (mode === 'hybrid') {
+    const overrides: Partial<ExecutionModeConfig> = {};
+    if (Array.isArray(options.actionsAllowlist)) {
+      overrides.actionsAllowlist = toStringSet(options.actionsAllowlist);
+    }
+    if (Array.isArray(options.legacyOnlyTypes)) {
+      overrides.legacyOnlyTypes = toStringSet(options.legacyOnlyTypes);
+    }
+    return createHybridConfig(overrides);
+  }
+
+  if (mode === 'actions') {
+    return createActionsOnlyConfig();
+  }
+
+  return { ...DEFAULT_EXECUTION_MODE_CONFIG };
+}
+```
+
+**M2.1: 双重策略问题修复（已完成 ✅）**
+
+**问题描述**: StepRunner 和 ActionRegistry 都有 retry/nav-wait 逻辑，会导致双重等待。
+
+**解决方案**: StepRunner 作为策略权威，ActionRegistry 的内部策略可被跳过。
+
+**修改文件清单**:
+| 文件 | 改动内容 |
+|------|----------|
+| `actions/types.ts` | 新增 `ExecutionFlags` 接口、`ActionExecutionContext.execution` 字段 |
+| `actions/adapter.ts` | `StepExecutorOptions` 新增 `skipRetry/skipNavWait`，实现策略跳过逻辑 |
+| `actions/handlers/click.ts` | 检查 `ctx.execution?.skipNavWait` 跳过导航等待 |
+| `actions/handlers/navigate.ts` | 检查 `ctx.execution?.skipNavWait` 跳过导航等待 |
+
+**ExecutionFlags 接口**:
+
+```typescript
+export interface ExecutionFlags {
+  skipNavWait?: boolean; // 跳过 handler 内部的导航等待
+}
+
+export interface ActionExecutionContext {
+  // ... existing fields
+  execution?: ExecutionFlags;
+}
+```
+
+**adapter.ts 策略跳过逻辑**:
+
+```typescript
+export interface StepExecutorOptions {
+  runId?: string;
+  pushLog?: (entry: unknown) => void;
+  strict?: boolean;
+  skipRetry?: boolean; // 移除 action.policy.retry
+  skipNavWait?: boolean; // 设置 ctx.execution.skipNavWait
+}
+
+// 在 createStepExecutor 中
+if (options?.skipRetry === true && action.policy?.retry) {
+  action = { ...action, policy: { ...action.policy, retry: undefined } };
+}
+const execution: ExecutionFlags | undefined =
+  options?.skipNavWait === true ? { skipNavWait: true } : undefined;
+```
+
+**click.ts/navigate.ts 检查**:
+
+```typescript
+const skipNavWait = ctx.execution?.skipNavWait === true;
+if (skipNavWait) {
+  return { status: 'success' }; // 跳过导航等待
+}
+// ... 正常导航等待逻辑
+```
+
+**P1.0: 存储层统一 - 迁移与导入（已完成 ✅）**
+
+1. ✅ **启用 ensureMigratedFromLocal()**
+   - `flow-store.ts`: 所有读写入口添加迁移 gate
+   - `trigger-store.ts`: 所有读写入口添加迁移 gate
+   - 迁移逻辑：从 chrome.storage.local 读取旧数据 → 写入 IndexedDB
+
+2. ✅ **完善 importFlowFromJson()**
+   - 支持 4 种格式：数组、{ flows }、单个 steps、单个 nodes-only
+   - 更严格的字段验证（必须有 id）
+   - 自动补齐 name/version/steps/meta 默认值
+
+3. ✅ **edges 一致性校验**
+   - `normalizeFlowForSave()` 在有 nodes 时也校验 edges
+   - 移除引用不存在 node 的 edges，防止 scheduler 运行时错误
+
+##### P1.0 详细实现说明
+
+**修改文件清单**:
+| 文件 | 改动内容 |
+|------|----------|
+| `flow-store.ts` | 所有函数添加 `await ensureMigratedFromLocal()`；重写 `importFlowFromJson()` |
+| `trigger-store.ts` | 所有函数添加 `await ensureMigratedFromLocal()` |
+
+**ensureMigratedFromLocal() 调用位置** (`flow-store.ts`):
+
+```typescript
+export async function listFlows(): Promise<Flow[]> {
+  await ensureMigratedFromLocal(); // ← 添加
+  const flows = await IndexedDbStorage.flows.list();
+  // ...
+}
+
+export async function getFlow(flowId: string): Promise<Flow | undefined> {
+  await ensureMigratedFromLocal(); // ← 添加
+  // ...
+}
+
+export async function saveFlow(flow: Flow): Promise<void> {
+  await ensureMigratedFromLocal(); // ← 添加
+  // ...
+}
+
+// 同样: deleteFlow, listRuns, appendRun, listPublished, publishFlow, unpublishFlow,
+//       exportFlow, exportAllFlows, importFlowFromJson, listSchedules, saveSchedule, removeSchedule
+```
+
+**importFlowFromJson 重写**:
+
+```typescript
+export async function importFlowFromJson(json: string): Promise<Flow[]> {
+  await ensureMigratedFromLocal();
+  const parsed = JSON.parse(json);
+
+  // 支持 4 种格式
+  const candidates: unknown[] = Array.isArray(parsed)
+    ? parsed // 格式1: 数组
+    : Array.isArray(parsed?.flows)
+      ? parsed.flows // 格式2: { flows: [...] }
+      : parsed?.id && (Array.isArray(parsed?.steps) || Array.isArray(parsed?.nodes))
+        ? [parsed] // 格式3/4: 单个 flow (steps 或 nodes)
+        : [];
+
+  if (!candidates.length) {
+    throw new Error('invalid flow json: no flows found');
+  }
+
+  // 验证和规范化每个 flow
+  for (const raw of candidates) {
+    const id = String(f.id || '').trim();
+    if (!id) throw new Error('invalid flow json: missing id');
+
+    // 自动补齐字段
+    const name = typeof f.name === 'string' && f.name.trim() ? f.name : id;
+    const version = Number.isFinite(Number(f.version)) ? Number(f.version) : 1;
+    const steps = Array.isArray(f.steps) ? f.steps : [];
+    // ...
+  }
+
+  // 保存（normalize on save）
+  for (const f of flowsToImport) {
+    await saveFlow(f);
+  }
+
+  return flowsToImport;
+}
+```
+
+**normalizeFlowForSave edges 校验** (`flow-store.ts:50`):
+
+```typescript
+function normalizeFlowForSave(flow: Flow): Flow {
+  const hasNodes = Array.isArray(flow.nodes) && flow.nodes.length > 0;
+  if (hasNodes) {
+    // 即使有 nodes，也校验 edges（处理导入/手动编辑的脏数据）
+    const nodeIds = new Set(flow.nodes!.map((n) => n.id));
+    if (Array.isArray(flow.edges) && flow.edges.length > 0) {
+      const validEdges = filterValidEdges(flow.edges, nodeIds);
+      if (validEdges.length !== flow.edges.length) {
+        return { ...flow, edges: validEdges }; // 返回清理后的 flow
+      }
+    }
+    return flow;
+  }
+  // ... 原有逻辑：从 steps 生成 nodes/edges
+}
+
+function filterValidEdges(edges: Edge[], nodeIds: Set<string>): Edge[] {
+  return edges.filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to));
+}
+```
+
+**M3-core: 契约测试（已完成 ✅）**
+
+1. ✅ **测试基础设施**
+   - `tests/record-replay/_test-helpers.ts`: 工厂函数和 mock helpers
+   - 使用 vitest + mock，不依赖真实浏览器
+
+2. ✅ **adapter-policy.contract.test.ts** (7 tests)
+   - `skipRetry` 移除 `action.policy.retry` 验证
+   - `skipNavWait` 设置 `ctx.execution.skipNavWait` 验证
+   - 组合 flags 验证
+
+3. ✅ **step-executor.contract.test.ts** (20 tests)
+   - `DEFAULT_EXECUTION_MODE_CONFIG` 契约
+   - `createHybridConfig` / `createActionsOnlyConfig` 契约
+   - `LegacyStepExecutor` 行为验证
+   - `HybridStepExecutor` 路由验证
+   - `createExecutor` 工厂验证
+   - `MINIMAL_HYBRID_ACTION_TYPES` 内容验证
+
+4. ✅ **session-dag-sync.contract.test.ts** (15 tests)
+   - 首个 step 创建 node（无 edge）
+   - 后续 step 创建 node + edge
+   - 批量 step 正确链接
+   - upsert 更新 node config / 保留 edges
+   - 不变式处理（nodes 缺失、edges 缺失、edges 指向错误）
+   - session 生命周期（start/stop 清理缓存）
+   - 类型转换（有效类型、未知类型降级）
+   - edge id 唯一性和单调序列
+
+##### M3-core 详细实现说明
+
+**测试文件清单**:
+| 文件 | 测试数 | 覆盖内容 |
+|------|--------|----------|
+| `tests/record-replay/_test-helpers.ts` | - | 工厂函数：`createMockExecCtx`、`createMockActionCtx`、`createMockStep`、`createMockFlow`、`createMockRegistry` |
+| `tests/record-replay/adapter-policy.contract.test.ts` | 7 | adapter.ts 的 skipRetry/skipNavWait 策略跳过逻辑 |
+| `tests/record-replay/step-executor.contract.test.ts` | 20 | execution-mode.ts 配置契约、step-executor.ts 执行器路由 |
+| `tests/record-replay/session-dag-sync.contract.test.ts` | 15 | session-manager.ts 的增量 DAG 同步逻辑 |
+
+**测试运行方式**:
+
+```bash
+pnpm test                                    # 运行所有测试
+pnpm test tests/record-replay/               # 运行 record-replay 相关测试
+```
+
+**当前测试状态**: 197 个测试全部通过
+
+**vitest mock 注意事项** (重要):
+
+```typescript
+// ❌ 错误：mock 函数定义在 vi.mock 外部会导致 hoisting 错误
+const mockFn = vi.fn();
+vi.mock('./module', () => ({ fn: mockFn }));
+
+// ✅ 正确：mock 函数定义在 vi.mock 内部
+vi.mock('./module', () => ({
+  fn: vi.fn(async () => ({ status: 'success' })),
+}));
+
+// 获取 mock 引用
+import { fn } from './module';
+const mockFn = fn as ReturnType<typeof vi.fn>;
+```
+
+**\_test-helpers.ts 工厂函数**:
+
+```typescript
+// 创建最小 ExecCtx
+export function createMockExecCtx(overrides: Partial<ExecCtx> = {}): ExecCtx {
+  return { vars: {}, logger: vi.fn(), ...overrides };
+}
+
+// 创建最小 Step
+export function createMockStep(type: string, overrides: Record<string, unknown> = {}): any {
+  return {
+    id: `step_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    type,
+    ...overrides,
+  };
+}
+
+// 创建 mock ActionRegistry
+export function createMockRegistry(handlers: Map<string, any> = new Map()) {
+  const executeFn = vi.fn(async () => ({ status: 'success' as const }));
+  return {
+    get: vi.fn((type: string) => handlers.get(type) || { type }),
+    execute: executeFn,
+    register: vi.fn(),
+    has: vi.fn((type: string) => handlers.has(type)),
+    _executeFn: executeFn, // 暴露给测试断言
+  };
+}
+```
+
+**M3-full: 完整集成测试（待实施）**
+
+1. [ ] 在 hybrid 模式下验证各类型行为一致性
+2. [ ] 特别关注：aria selector、script when:'after' defer、control-flow 条件求值
+3. [ ] openTab/switchTab 后更新 ctx.tabId
 
 **P4: 清理旧类型**
 

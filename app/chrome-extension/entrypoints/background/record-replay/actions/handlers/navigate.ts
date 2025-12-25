@@ -33,17 +33,22 @@ export const navigateHandler: ActionHandler<'navigate'> = {
   run: async (ctx, action) => {
     const vars = ctx.vars;
     const tabId = ctx.tabId;
+    // Check if StepRunner owns nav-wait (skip internal nav-wait logic)
+    const skipNavWait = ctx.execution?.skipNavWait === true;
 
     if (typeof tabId !== 'number') {
       return failed('TAB_NOT_FOUND', 'No active tab found');
     }
 
-    const beforeUrl = await readTabUrl(tabId);
-    const waitMs = clampInt(
-      action.policy?.timeout?.ms ?? ENGINE_CONSTANTS.DEFAULT_WAIT_MS,
-      0,
-      ENGINE_CONSTANTS.MAX_WAIT_MS,
-    );
+    // Only read beforeUrl and calculate waitMs if we need to do nav-wait
+    const beforeUrl = skipNavWait ? '' : await readTabUrl(tabId);
+    const waitMs = skipNavWait
+      ? 0
+      : clampInt(
+          action.policy?.timeout?.ms ?? ENGINE_CONSTANTS.DEFAULT_WAIT_MS,
+          0,
+          ENGINE_CONSTANTS.MAX_WAIT_MS,
+        );
 
     // Handle page refresh
     if (action.params.refresh) {
@@ -58,8 +63,11 @@ export const navigateHandler: ActionHandler<'navigate'> = {
         return failed('NAVIGATION_FAILED', errorMsg);
       }
 
-      await waitForNavigationDone(beforeUrl, waitMs);
-      await ensureReadPageIfWeb();
+      // Skip nav-wait if StepRunner handles it
+      if (!skipNavWait) {
+        await waitForNavigationDone(beforeUrl, waitMs);
+        await ensureReadPageIfWeb();
+      }
       return { status: 'success' };
     }
 
@@ -85,8 +93,11 @@ export const navigateHandler: ActionHandler<'navigate'> = {
       return failed('NAVIGATION_FAILED', errorMsg);
     }
 
-    await waitForNavigationDone(beforeUrl, waitMs);
-    await ensureReadPageIfWeb();
+    // Skip nav-wait if StepRunner handles it
+    if (!skipNavWait) {
+      await waitForNavigationDone(beforeUrl, waitMs);
+      await ensureReadPageIfWeb();
+    }
 
     return { status: 'success' };
   },

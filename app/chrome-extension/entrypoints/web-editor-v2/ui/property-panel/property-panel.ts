@@ -15,6 +15,7 @@
 
 import { Disposer } from '../../utils/disposables';
 import { installFloatingDrag, type FloatingPosition } from '../floating-drag';
+import { createChevronIcon, createCloseIcon, createGripIcon } from '../icons';
 import type {
   PropertyPanel,
   PropertyPanelOptions,
@@ -41,15 +42,15 @@ import { createPropsPanel, type PropsPanel } from './props-panel';
 
 /** Control group configuration */
 const CONTROL_GROUPS = [
-  { id: 'position', label: 'Position' },
-  { id: 'layout', label: 'Layout' },
-  { id: 'size', label: 'Size' },
-  { id: 'spacing', label: 'Spacing' },
-  { id: 'typography', label: 'Typography' },
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'border', label: 'Border' },
-  { id: 'background', label: 'Background' },
-  { id: 'effects', label: 'Effects' },
+  { id: 'position', label: 'Position', collapsible: true },
+  { id: 'layout', label: 'Layout', collapsible: true },
+  { id: 'size', label: 'Size', collapsible: true },
+  { id: 'spacing', label: 'Spacing', collapsible: true },
+  { id: 'typography', label: 'Typography', collapsible: true },
+  { id: 'appearance', label: 'Appearance', collapsible: true },
+  { id: 'border', label: 'Border', collapsible: true },
+  { id: 'background', label: 'Background', collapsible: true },
+  { id: 'effects', label: 'Effects', collapsible: false },
 ] as const;
 
 type ControlGroupId = (typeof CONTROL_GROUPS)[number]['id'];
@@ -81,46 +82,6 @@ function formatTargetLabel(element: Element): string {
 }
 
 /**
- * Create chevron SVG icon for collapse/expand indicator
- */
-function createChevronIcon(): SVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 20 20');
-  svg.setAttribute('fill', 'none');
-  svg.classList.add('we-chevron');
-
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', 'M7 8l3 3 3-3');
-  path.setAttribute('stroke', 'currentColor');
-  path.setAttribute('stroke-width', '2');
-  path.setAttribute('stroke-linecap', 'round');
-  path.setAttribute('stroke-linejoin', 'round');
-  svg.append(path);
-
-  return svg;
-}
-
-/**
- * Create close (X) SVG icon for window close button
- */
-function createCloseIcon(): SVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 20 20');
-  svg.setAttribute('fill', 'none');
-  svg.setAttribute('aria-hidden', 'true');
-
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', 'M6 6l8 8M14 6l-8 8');
-  path.setAttribute('stroke', 'currentColor');
-  path.setAttribute('stroke-width', '2');
-  path.setAttribute('stroke-linecap', 'round');
-  path.setAttribute('stroke-linejoin', 'round');
-  svg.append(path);
-
-  return svg;
-}
-
-/**
  * Create sliders SVG icon for property panel minimize/expand button
  */
 function createSlidersIcon(): SVGElement {
@@ -139,7 +100,7 @@ function createSlidersIcon(): SVGElement {
   svg.append(lines);
 
   // Three knob circles at different positions
-  const knobs: Array<[number, number]> = [
+  const knobs: ReadonlyArray<readonly [number, number]> = [
     [7, 5],
     [13, 10],
     [9, 15],
@@ -160,41 +121,16 @@ function createSlidersIcon(): SVGElement {
 }
 
 /**
- * Create grip (drag handle) SVG icon
+ * Create a control group (optionally collapsible)
  */
-function createGripIcon(): SVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 20 20');
-  svg.setAttribute('fill', 'none');
-  svg.setAttribute('aria-hidden', 'true');
-
-  // 6 dots in 2 columns
-  const dots: Array<[number, number]> = [
-    [7, 6],
-    [13, 6],
-    [7, 10],
-    [13, 10],
-    [7, 14],
-    [13, 14],
-  ];
-
-  for (const [cx, cy] of dots) {
-    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('cx', String(cx));
-    circle.setAttribute('cy', String(cy));
-    circle.setAttribute('r', '1.4');
-    circle.setAttribute('fill', 'currentColor');
-    svg.append(circle);
-  }
-
-  return svg;
-}
-
-/**
- * Create a collapsible control group
- */
-function createControlGroup(groupId: string, label: string, disposer: Disposer): ControlGroup {
+function createControlGroup(
+  groupId: string,
+  label: string,
+  disposer: Disposer,
+  opts?: { collapsible?: boolean },
+): ControlGroup {
   const uniqueId = `we_group_${groupId}_${++groupIdSeq}`;
+  const collapsible = opts?.collapsible ?? true;
   let collapsed = false;
 
   // Group container
@@ -203,35 +139,56 @@ function createControlGroup(groupId: string, label: string, disposer: Disposer):
   root.dataset.group = groupId;
   root.dataset.collapsed = 'false';
 
-  // Header button (clickable to toggle)
-  const header = document.createElement('button');
-  header.type = 'button';
+  // Header (div wrapper to allow button + actions)
+  const header = document.createElement('div');
   header.className = 'we-group-header';
-  header.setAttribute('aria-expanded', 'true');
-  header.setAttribute('aria-controls', uniqueId);
 
   const labelSpan = document.createElement('span');
   labelSpan.textContent = label;
 
-  header.append(labelSpan, createChevronIcon());
+  // Toggle element (button when collapsible; static label otherwise)
+  let toggleEl: HTMLButtonElement | HTMLDivElement;
+
+  if (collapsible) {
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'we-group-toggle';
+    toggleBtn.setAttribute('aria-expanded', 'true');
+    toggleBtn.setAttribute('aria-controls', uniqueId);
+    toggleBtn.append(labelSpan, createChevronIcon());
+
+    // Toggle handler
+    disposer.listen(toggleBtn, 'click', (event) => {
+      event.preventDefault();
+      toggle();
+    });
+
+    toggleEl = toggleBtn;
+  } else {
+    const staticLabel = document.createElement('div');
+    staticLabel.className = 'we-group-toggle we-group-toggle--static';
+    staticLabel.append(labelSpan);
+    toggleEl = staticLabel;
+  }
+
+  // Actions container (for add buttons, etc.)
+  const headerActions = document.createElement('div');
+  headerActions.className = 'we-group-header-actions';
+
+  header.append(toggleEl, headerActions);
 
   // Body container
   const body = document.createElement('div');
   body.className = 'we-group-body';
   body.id = uniqueId;
 
-  // Toggle handler
-  disposer.listen(header, 'click', (event) => {
-    event.preventDefault();
-    toggle();
-  });
-
   root.append(header, body);
 
   function setCollapsed(value: boolean): void {
+    if (!collapsible) return;
     collapsed = value;
     root.dataset.collapsed = collapsed ? 'true' : 'false';
-    header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    (toggleEl as HTMLButtonElement).setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
 
   function isCollapsed(): boolean {
@@ -239,12 +196,14 @@ function createControlGroup(groupId: string, label: string, disposer: Disposer):
   }
 
   function toggle(): void {
+    if (!collapsible) return;
     setCollapsed(!collapsed);
   }
 
   return {
     root,
     body,
+    headerActions,
     setCollapsed,
     isCollapsed,
     toggle,
@@ -408,8 +367,8 @@ export function createPropertyPanel(options: PropertyPanelOptions): PropertyPane
   designPanel.dataset.tabContent = 'design';
 
   // Create control groups
-  for (const { id, label } of CONTROL_GROUPS) {
-    const group = createControlGroup(id, label, disposer);
+  for (const { id, label, collapsible } of CONTROL_GROUPS) {
+    const group = createControlGroup(id, label, disposer, { collapsible });
     controlGroups.set(id, group);
     designPanel.append(group.root);
   }
@@ -604,6 +563,7 @@ export function createPropertyPanel(options: PropertyPanelOptions): PropertyPane
         container: effectsGroup.body,
         transactionManager: options.transactionManager,
         tokensService: options.tokensService,
+        headerActionsContainer: effectsGroup.headerActions,
       });
       controls.push(effectsControl);
     }

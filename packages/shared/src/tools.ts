@@ -12,6 +12,8 @@ export const TOOL_NAMES = {
     CLICK: 'chrome_click_element',
     FILL: 'chrome_fill_or_select',
     GET_INTERACTIVE_ELEMENTS: 'chrome_get_interactive_elements',
+    NETWORK_CAPTURE: 'chrome_network_capture',
+    // Legacy tool names (kept for internal use, not exposed in TOOL_SCHEMAS)
     NETWORK_CAPTURE_START: 'chrome_network_capture_start',
     NETWORK_CAPTURE_STOP: 'chrome_network_capture_stop',
     NETWORK_REQUEST: 'chrome_network_request',
@@ -594,16 +596,26 @@ export const TOOL_SCHEMAS: Tool[] = [
     },
   },
   {
-    name: TOOL_NAMES.BROWSER.NETWORK_DEBUGGER_START,
+    name: TOOL_NAMES.BROWSER.NETWORK_CAPTURE,
     description:
-      'Start capturing network requests using Chrome Debugger API. Use this when you need responseBody content. Note: occupies debugger, may conflict with DevTools.',
+      'Unified network capture tool. Use action="start" to begin capturing, action="stop" to end and retrieve results. Set needResponseBody=true to capture response bodies (uses Debugger API, may conflict with DevTools). Default mode uses webRequest API (lightweight, no debugger conflict, but no response body).',
     inputSchema: {
       type: 'object',
       properties: {
+        action: {
+          type: 'string',
+          enum: ['start', 'stop'],
+          description: 'Action to perform: "start" begins capture, "stop" ends and returns results',
+        },
+        needResponseBody: {
+          type: 'boolean',
+          description:
+            'When true, captures response body using Debugger API (default: false). Only use when you need to inspect response content.',
+        },
         url: {
           type: 'string',
           description:
-            'URL to capture network requests from. If not provided, uses the current active tab',
+            'URL to capture network requests from. For action="start". If not provided, uses the current active tab.',
         },
         maxCaptureTime: {
           type: 'number',
@@ -618,17 +630,7 @@ export const TOOL_SCHEMAS: Tool[] = [
           description: 'Include static resources like images/scripts/styles (default: false)',
         },
       },
-      required: [],
-    },
-  },
-  {
-    name: TOOL_NAMES.BROWSER.NETWORK_DEBUGGER_STOP,
-    description:
-      'Stop capturing network requests using Chrome Debugger API and return the captured data with responseBody',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      required: [],
+      required: ['action'],
     },
   },
   {
@@ -641,44 +643,6 @@ export const TOOL_SCHEMAS: Tool[] = [
         timeoutMs: { type: 'number', description: 'Timeout in ms (default 60000, max 300000)' },
         waitForComplete: { type: 'boolean', description: 'Wait until completed (default true)' },
       },
-      required: [],
-    },
-  },
-  {
-    name: TOOL_NAMES.BROWSER.NETWORK_CAPTURE_START,
-    description:
-      'Start capturing network requests using Chrome webRequest API. Lightweight, does not occupy debugger. Use chrome_network_debugger_start if you need responseBody.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description:
-            'URL to capture network requests from. If not provided, uses the current active tab',
-        },
-        maxCaptureTime: {
-          type: 'number',
-          description: 'Maximum capture time in milliseconds (default: 180000)',
-        },
-        inactivityTimeout: {
-          type: 'number',
-          description: 'Stop after inactivity in milliseconds (default: 60000). Set 0 to disable.',
-        },
-        includeStatic: {
-          type: 'boolean',
-          description: 'Include static resources like images/scripts/styles (default: false)',
-        },
-      },
-      required: [],
-    },
-  },
-  {
-    name: TOOL_NAMES.BROWSER.NETWORK_CAPTURE_STOP,
-    description:
-      'Stop capturing network requests using webRequest API and return the captured data (without responseBody)',
-    inputSchema: {
-      type: 'object',
-      properties: {},
       required: [],
     },
   },

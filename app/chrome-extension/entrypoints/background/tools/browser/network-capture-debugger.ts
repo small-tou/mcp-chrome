@@ -2,6 +2,7 @@ import { createErrorResponse, ToolResult } from '@/common/tool-handler';
 import { BaseBrowserToolExecutor } from '../base-browser';
 import { TOOL_NAMES } from 'chrome-mcp-shared';
 import { cdpSessionManager } from '@/utils/cdp-session-manager';
+import { NETWORK_FILTERS } from '@/common/constants';
 
 interface NetworkDebuggerStartToolParams {
   url?: string; // URL to navigate to or focus. If not provided, uses active tab.
@@ -34,80 +35,6 @@ interface NetworkRequestInfo {
   specificResponseHeaders?: Record<string, string>; // Headers unique to this response
   [key: string]: any; // Allow other properties from debugger events
 }
-
-// Static resource file extensions list
-const STATIC_RESOURCE_EXTENSIONS = [
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.bmp',
-  '.webp',
-  '.svg',
-  '.ico',
-  '.cur',
-  '.css',
-  '.woff',
-  '.woff2',
-  '.ttf',
-  '.eot',
-  '.otf',
-  '.mp3',
-  '.mp4',
-  '.avi',
-  '.mov',
-  '.webm',
-  '.ogg',
-  '.wav',
-  '.pdf',
-  '.zip',
-  '.rar',
-  '.7z',
-  '.iso',
-  '.dmg',
-  '.js',
-  '.jsx',
-  '.ts',
-  '.tsx',
-  '.map', // Source maps
-];
-
-// Ad and analytics domains list
-const AD_ANALYTICS_DOMAINS = [
-  'google-analytics.com',
-  'googletagmanager.com',
-  'analytics.google.com',
-  'doubleclick.net',
-  'googlesyndication.com',
-  'googleads.g.doubleclick.net',
-  'facebook.com/tr',
-  'connect.facebook.net',
-  'bat.bing.com',
-  'linkedin.com', // Often for tracking pixels/insights
-  'analytics.twitter.com',
-  'static.hotjar.com',
-  'script.hotjar.com',
-  'stats.g.doubleclick.net',
-  'amazon-adsystem.com',
-  'adservice.google.com',
-  'pagead2.googlesyndication.com',
-  'ads-twitter.com',
-  'ads.yahoo.com',
-  'adroll.com',
-  'adnxs.com',
-  'criteo.com',
-  'quantserve.com',
-  'scorecardresearch.com',
-  'segment.io',
-  'amplitude.com',
-  'mixpanel.com',
-  'optimizely.com',
-  'crazyegg.com',
-  'clicktale.net',
-  'mouseflow.com',
-  'fullstory.com',
-  'clarity.ms',
-];
 
 const DEBUGGER_PROTOCOL_VERSION = '1.3';
 const MAX_RESPONSE_BODY_SIZE_BYTES = 1 * 1024 * 1024; // 1MB
@@ -366,92 +293,43 @@ class NetworkDebuggerStartTool extends BaseBrowserToolExecutor {
     await this.stopCapture(tabId, true); // Pass a flag indicating it's an auto-stop
   }
 
-  // Static resource MIME types list (used when includeStatic is false)
-  private static STATIC_MIME_TYPES_TO_FILTER = [
-    'image/', // all image types (image/png, image/jpeg, etc.)
-    'font/', // all font types (font/woff, font/ttf, etc.)
-    'audio/', // all audio types
-    'video/', // all video types
-    'text/css',
-    // Note: text/javascript, application/javascript etc. are often filtered by extension.
-    // If script files need to be filtered by MIME type as well, add them here.
-    // 'application/javascript',
-    // 'application/x-javascript',
-    'application/pdf',
-    'application/zip',
-    'application/octet-stream', // Often used for downloads or generic binary data
-  ];
-
-  // API-like response MIME types (these are generally NOT filtered, and we might want their bodies)
-  private static API_MIME_TYPES = [
-    'application/json',
-    'application/xml',
-    'text/xml',
-    // 'text/json' is not standard, but sometimes seen. 'application/json' is preferred.
-    'text/plain', // Can be API response, handle with care. Often captured.
-    'application/x-www-form-urlencoded', // Form submissions, can be API calls
-    'application/graphql',
-    // Add other common API types if needed
-  ];
-
+  /**
+   * Check if URL should be filtered based on EXCLUDED_DOMAINS patterns.
+   * Uses full URL substring match to support patterns like 'facebook.com/tr'.
+   */
   private shouldFilterRequestByUrl(url: string): boolean {
-    try {
-      const urlObj = new URL(url);
-      // Filter ad/analytics domains
-      if (AD_ANALYTICS_DOMAINS.some((domain) => urlObj.hostname.includes(domain))) {
-        // console.log(`NetworkDebuggerStartTool: Filtering ad/analytics domain: ${urlObj.hostname}`);
-        return true;
-      }
-      return false;
-    } catch (e) {
-      // Invalid URL? Log and don't filter.
-      console.error(`NetworkDebuggerStartTool: Error parsing URL for filtering: ${url}`, e);
-      return false;
-    }
+    const normalizedUrl = String(url || '').toLowerCase();
+    if (!normalizedUrl) return false;
+    return NETWORK_FILTERS.EXCLUDED_DOMAINS.some((pattern) => normalizedUrl.includes(pattern));
   }
 
   private shouldFilterRequestByExtension(url: string, includeStatic: boolean): boolean {
-    if (includeStatic) return false; // If including static, don't filter by extension
+    if (includeStatic) return false;
 
     try {
       const urlObj = new URL(url);
       const path = urlObj.pathname.toLowerCase();
-      if (STATIC_RESOURCE_EXTENSIONS.some((ext) => path.endsWith(ext))) {
-        // console.log(`NetworkDebuggerStartTool: Filtering static resource by extension: ${path}`);
-        return true;
-      }
-      return false;
-    } catch (e) {
-      console.error(
-        `NetworkDebuggerStartTool: Error parsing URL for extension filtering: ${url}`,
-        e,
-      );
+      return NETWORK_FILTERS.STATIC_RESOURCE_EXTENSIONS.some((ext) => path.endsWith(ext));
+    } catch {
       return false;
     }
   }
 
-  // MIME type-based filtering, called after response is received
   private shouldFilterByMimeType(mimeType: string, includeStatic: boolean): boolean {
-    if (!mimeType) return false; // No MIME type, don't make a decision based on it here
+    if (!mimeType) return false;
 
-    // If API_MIME_TYPES contains this mimeType, we explicitly DON'T want to filter it by MIME.
-    if (NetworkDebuggerStartTool.API_MIME_TYPES.some((apiMime) => mimeType.startsWith(apiMime))) {
+    // Never filter API MIME types
+    if (NETWORK_FILTERS.API_MIME_TYPES.some((apiMime) => mimeType.startsWith(apiMime))) {
       return false;
     }
 
-    // If we are NOT including static files, then check against the list of static MIME types.
+    // Filter static MIME types when not including static resources
     if (!includeStatic) {
-      if (
-        NetworkDebuggerStartTool.STATIC_MIME_TYPES_TO_FILTER.some((staticMime) =>
-          mimeType.startsWith(staticMime),
-        )
-      ) {
-        // console.log(`NetworkDebuggerStartTool: Filtering static resource by MIME type: ${mimeType}`);
-        return true;
-      }
+      return NETWORK_FILTERS.STATIC_MIME_TYPES_TO_FILTER.some((staticMime) =>
+        mimeType.startsWith(staticMime),
+      );
     }
 
-    // Default: don't filter by MIME type if no other rule matched
     return false;
   }
 
@@ -595,7 +473,7 @@ class NetworkDebuggerStartTool extends BaseBrowserToolExecutor {
     const mimeType = requestInfo.mimeType || '';
 
     // Prioritize API MIME types for body capture
-    if (NetworkDebuggerStartTool.API_MIME_TYPES.some((type) => mimeType.startsWith(type))) {
+    if (NETWORK_FILTERS.API_MIME_TYPES.some((type) => mimeType.startsWith(type))) {
       return true;
     }
 
@@ -611,7 +489,7 @@ class NetworkDebuggerStartTool extends BaseBrowserToolExecutor {
       // unless it's a known non-API MIME type that slipped through (e.g. a script from a /api/ path)
       if (
         mimeType &&
-        NetworkDebuggerStartTool.STATIC_MIME_TYPES_TO_FILTER.some((staticMime) =>
+        NETWORK_FILTERS.STATIC_MIME_TYPES_TO_FILTER.some((staticMime) =>
           mimeType.startsWith(staticMime),
         )
       ) {

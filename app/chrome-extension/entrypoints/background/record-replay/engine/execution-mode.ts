@@ -35,7 +35,10 @@ export interface ExecutionModeConfig {
 
   /**
    * Step types that should use actions execution (allowlist)
-   * Only applies in hybrid mode. If empty, all supported types use actions.
+   * Only applies in hybrid mode.
+   * - If undefined: uses MINIMAL_HYBRID_ACTION_TYPES (safest default)
+   * - If empty Set (size=0): falls back to MIGRATED_ACTION_TYPES policy
+   * - If non-empty Set: only these types use actions
    */
   actionsAllowlist?: Set<string>;
 
@@ -46,8 +49,11 @@ export interface ExecutionModeConfig {
   logFallbacks?: boolean;
 
   /**
-   * Skip ActionRegistry's built-in retry/timeout when StepRunner handles them
-   * @default true - StepRunner already handles retry/timeout via withRetry and deadline
+   * Skip ActionRegistry's built-in retry policy.
+   * When true, action.policy.retry is removed before execution.
+   * @default true - StepRunner already handles retry via withRetry()
+   *
+   * Note: ActionRegistry timeout is NOT disabled (provides per-action timeout safety).
    */
   skipActionsRetry?: boolean;
 
@@ -68,6 +74,29 @@ export const DEFAULT_EXECUTION_MODE_CONFIG: ExecutionModeConfig = {
   skipActionsRetry: true,
   skipActionsNavWait: true,
 };
+
+/**
+ * Minimal allowlist for initial hybrid rollout.
+ *
+ * This keeps high-risk step types (navigation/click/tab management) on legacy
+ * until policy (retry/timeout/nav-wait) and tab cursor semantics are unified.
+ *
+ * These types are chosen for their low risk:
+ * - No navigation side effects
+ * - No tab management
+ * - No complex timing requirements
+ * - Simple input/output semantics
+ */
+export const MINIMAL_HYBRID_ACTION_TYPES = new Set<string>([
+  'fill', // Form input - no navigation
+  'key', // Keyboard input - no navigation
+  'scroll', // Viewport manipulation - no navigation
+  'drag', // Drag and drop - local operation
+  'wait', // Condition waiting - no side effects
+  'delay', // Simple delay - no side effects
+  'screenshot', // Capture only - no side effects
+  'assert', // Validation only - no side effects
+]);
 
 /**
  * Step types that are fully migrated and tested with ActionRegistry
@@ -165,21 +194,34 @@ export function shouldUseActions(step: Step, config: ExecutionModeConfig): boole
 }
 
 /**
- * Create a hybrid execution mode config for gradual migration
- * Starts with only the most stable types enabled for actions
+ * Create a hybrid execution mode config for gradual migration.
+ *
+ * By default uses MINIMAL_HYBRID_ACTION_TYPES as allowlist, which excludes
+ * high-risk types (navigate/click/tab management) from actions execution.
+ *
+ * @param overrides - Optional overrides for the config
+ * @param overrides.actionsAllowlist - Set of step types to execute via actions.
+ *   If provided with size > 0, only these types use actions.
+ *   If empty Set, falls back to MIGRATED_ACTION_TYPES.
+ *   If undefined, uses MINIMAL_HYBRID_ACTION_TYPES (safest default).
  */
 export function createHybridConfig(overrides?: Partial<ExecutionModeConfig>): ExecutionModeConfig {
   return {
     ...DEFAULT_EXECUTION_MODE_CONFIG,
     mode: 'hybrid',
-    legacyOnlyTypes: LEGACY_ONLY_TYPES,
+    legacyOnlyTypes: new Set(LEGACY_ONLY_TYPES),
+    actionsAllowlist: new Set(MINIMAL_HYBRID_ACTION_TYPES),
     ...overrides,
   };
 }
 
 /**
- * Create a strict actions mode config for testing
- * All steps must be handled by ActionRegistry or throw
+ * Create a strict actions mode config for testing.
+ * All steps must be handled by ActionRegistry or throw.
+ *
+ * Note: Even in actions mode, StepRunner remains the policy authority for
+ * retry/nav-wait. This ensures consistent behavior across all execution modes
+ * and avoids double-strategy issues.
  */
 export function createActionsOnlyConfig(
   overrides?: Partial<ExecutionModeConfig>,
@@ -187,8 +229,9 @@ export function createActionsOnlyConfig(
   return {
     ...DEFAULT_EXECUTION_MODE_CONFIG,
     mode: 'actions',
-    skipActionsRetry: false,
-    skipActionsNavWait: false,
+    // Keep StepRunner as policy authority - skip ActionRegistry's internal policies
+    skipActionsRetry: true,
+    skipActionsNavWait: true,
     ...overrides,
   };
 }

@@ -16,6 +16,14 @@
 import type { StructureOperationData } from '@/common/web-editor-types';
 import { Disposer } from '../utils/disposables';
 import { installFloatingDrag, type FloatingPosition } from './floating-drag';
+import {
+  createCloseIcon,
+  createGripIcon,
+  createMinusIcon,
+  createPlusIcon,
+  createRedoIcon,
+  createUndoIcon,
+} from './icons';
 
 // =============================================================================
 // Types
@@ -137,66 +145,6 @@ function formatStatusMessage(base: string, result?: ApplyResult): string {
   return req ? `${base} (${req})` : base;
 }
 
-/**
- * Create wand (spark) SVG icon for toolbar minimize/expand button
- */
-function createWandIcon(): SVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 20 20');
-  svg.setAttribute('fill', 'none');
-  svg.setAttribute('aria-hidden', 'true');
-
-  // Wand diagonal line
-  const wand = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  wand.setAttribute('d', 'M4 16l8-8M6 18l-2-2M12 8l2 2');
-  wand.setAttribute('stroke', 'currentColor');
-  wand.setAttribute('stroke-width', '2');
-  wand.setAttribute('stroke-linecap', 'round');
-  wand.setAttribute('stroke-linejoin', 'round');
-
-  // Spark effect at tip
-  const spark = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  spark.setAttribute('d', 'M14 3v3M12.5 4.5h3');
-  spark.setAttribute('stroke', 'currentColor');
-  spark.setAttribute('stroke-width', '2');
-  spark.setAttribute('stroke-linecap', 'round');
-  spark.setAttribute('stroke-linejoin', 'round');
-
-  svg.append(wand, spark);
-  return svg;
-}
-
-/**
- * Create grip (drag handle) SVG icon
- */
-function createGripIcon(): SVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 20 20');
-  svg.setAttribute('fill', 'none');
-  svg.setAttribute('aria-hidden', 'true');
-
-  // 6 dots in 2 columns
-  const dots: Array<[number, number]> = [
-    [7, 6],
-    [13, 6],
-    [7, 10],
-    [13, 10],
-    [7, 14],
-    [13, 14],
-  ];
-
-  for (const [cx, cy] of dots) {
-    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('cx', String(cx));
-    circle.setAttribute('cy', String(cy));
-    circle.setAttribute('r', '1.4');
-    circle.setAttribute('fill', 'currentColor');
-    svg.append(circle);
-  }
-
-  return svg;
-}
-
 // =============================================================================
 // Status Reset Timer
 // =============================================================================
@@ -273,7 +221,7 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
   dragHandle.type = 'button';
   dragHandle.className = 'we-drag-handle';
   dragHandle.setAttribute('aria-label', 'Drag toolbar');
-  dragHandle.title = 'Drag';
+  dragHandle.dataset.tooltip = 'Drag';
   dragHandle.append(createGripIcon());
 
   const title = document.createElement('div');
@@ -313,31 +261,37 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
   applyBtn.textContent = 'Apply';
   applyBtn.setAttribute('aria-label', 'Apply changes to code');
 
+  // Undo button (icon style)
   const undoBtn = document.createElement('button');
   undoBtn.type = 'button';
-  undoBtn.className = 'we-btn';
-  undoBtn.textContent = 'Undo';
+  undoBtn.className = 'we-icon-btn';
   undoBtn.setAttribute('aria-label', 'Undo last change');
+  undoBtn.dataset.tooltip = 'Undo';
+  undoBtn.append(createUndoIcon());
 
+  // Redo button (icon style)
   const redoBtn = document.createElement('button');
   redoBtn.type = 'button';
-  redoBtn.className = 'we-btn';
-  redoBtn.textContent = 'Redo';
+  redoBtn.className = 'we-icon-btn';
   redoBtn.setAttribute('aria-label', 'Redo last undone change');
+  redoBtn.dataset.tooltip = 'Redo';
+  redoBtn.append(createRedoIcon());
 
+  // Close button (icon style)
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
-  closeBtn.className = 'we-btn we-btn--danger';
-  closeBtn.textContent = 'Close';
+  closeBtn.className = 'we-icon-btn';
   closeBtn.setAttribute('aria-label', 'Close Web Editor');
+  closeBtn.dataset.tooltip = 'Close';
+  closeBtn.append(createCloseIcon());
 
-  // Minimize/expand button
+  // Minimize/restore button
   const minimizeBtn = document.createElement('button');
   minimizeBtn.type = 'button';
   minimizeBtn.className = 'we-icon-btn';
   minimizeBtn.setAttribute('aria-label', 'Minimize toolbar');
-  minimizeBtn.title = 'Minimize';
-  minimizeBtn.append(createWandIcon());
+  minimizeBtn.dataset.tooltip = 'Minimize';
+  minimizeBtn.append(createMinusIcon());
 
   // ==========================================================================
   // Structure Dropdown (Phase 5.5)
@@ -561,8 +515,8 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
   function syncFloatingPositionStyles(): void {
     root.dataset.dragged = floatingPosition ? 'true' : 'false';
 
-    // While minimized, prefer the existing minimized layout (top-right)
-    if (!floatingPosition || minimized) {
+    // No floating position: use CSS-defined positioning
+    if (!floatingPosition) {
       root.style.left = '';
       root.style.top = '';
       root.style.right = '';
@@ -571,11 +525,14 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
       return;
     }
 
+    // Apply floating position (works for both minimized and expanded states)
     root.style.left = `${floatingPosition.left}px`;
     root.style.top = `${floatingPosition.top}px`;
     root.style.right = 'auto';
     root.style.bottom = 'auto';
-    root.style.transform = 'none';
+    // Don't override transform when minimized (preserves scale animation)
+    // Only clear transform when expanded to remove translateX(-50%)
+    root.style.transform = minimized ? '' : 'none';
   }
 
   function setPosition(position: FloatingPosition | null): void {
@@ -588,7 +545,7 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
     return floatingPosition;
   }
 
-  // Install drag behavior
+  // Install drag behavior for normal state (via drag handle)
   disposer.add(
     installFloatingDrag({
       handleEl: dragHandle,
@@ -597,6 +554,13 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
       onPositionChange: (pos) => setPosition(pos),
     }),
   );
+
+  // Minimized drag state: allows dragging the entire minimized toolbar
+  let minimizedDragCleanup: (() => void) | null = null;
+  disposer.add(() => {
+    minimizedDragCleanup?.();
+    minimizedDragCleanup = null;
+  });
 
   // Apply initial position (if provided)
   if (floatingPosition !== null) {
@@ -628,32 +592,43 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
     minimized = value;
     root.dataset.minimized = minimized ? 'true' : 'false';
 
-    // Update minimize button label and tooltip
-    minimizeBtn.setAttribute('aria-label', minimized ? 'Expand toolbar' : 'Minimize toolbar');
-    minimizeBtn.title = minimized ? 'Expand' : 'Minimize';
+    // Update minimize button label, tooltip, and icon
+    minimizeBtn.setAttribute('aria-label', minimized ? 'Restore toolbar' : 'Minimize toolbar');
+    minimizeBtn.dataset.tooltip = minimized ? 'Restore' : 'Minimize';
+    minimizeBtn.replaceChildren(minimized ? createPlusIcon() : createMinusIcon());
 
     if (minimized) {
       // Close dropdown before minimizing
       setStructureOpen(false);
 
-      // Move minimize button to root, hide sections
+      // Move minimize button to root for minimized state
       root.append(minimizeBtn);
-      left.hidden = true;
-      center.hidden = true;
-      right.hidden = true;
-    } else {
-      // Restore sections and button position
-      left.hidden = false;
-      center.hidden = false;
-      right.hidden = false;
-      right.insertBefore(minimizeBtn, closeBtn);
-    }
 
-    // Keep minimized layout stable while preserving stored floating position.
-    // When restoring, re-apply stored position (and clamp with current size).
-    if (!minimized && floatingPosition) {
-      setPosition(floatingPosition);
+      // Reset position to top-right corner when minimizing
+      setPosition(null);
+
+      // Install delayed-activation drag on root for minimized state
+      if (!minimizedDragCleanup) {
+        minimizedDragCleanup = installFloatingDrag({
+          handleEl: root,
+          targetEl: root,
+          clampMargin: CLAMP_MARGIN_PX,
+          onPositionChange: (pos) => setPosition(pos),
+          clickThresholdMs: 200,
+          moveThresholdPx: 5,
+        });
+      }
     } else {
+      // Restore minimize button position
+      right.insertBefore(minimizeBtn, closeBtn);
+
+      // Remove minimized drag handler
+      if (minimizedDragCleanup) {
+        minimizedDragCleanup();
+        minimizedDragCleanup = null;
+      }
+
+      // Keep position null when restoring to center the toolbar
       syncFloatingPositionStyles();
     }
   }
@@ -753,7 +728,18 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
   // Minimize button
   disposer.listen(minimizeBtn, 'click', (event) => {
     event.preventDefault();
+    event.stopPropagation();
     setMinimized(!minimized);
+  });
+
+  // Click anywhere on minimized toolbar root to restore (short click, not drag)
+  disposer.listen(root, 'click', (event) => {
+    if (!minimized) return;
+    // Don't restore if clicking minimize button (handled separately)
+    const target = event.target;
+    if (target === minimizeBtn || (target instanceof Node && minimizeBtn.contains(target))) return;
+    event.preventDefault();
+    setMinimized(false);
   });
 
   // Structure button - toggle dropdown

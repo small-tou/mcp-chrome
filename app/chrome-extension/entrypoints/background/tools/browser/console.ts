@@ -60,6 +60,8 @@ interface ConsoleResult {
   messageCount: number;
   exceptionCount: number;
   messageLimitReached: boolean;
+  droppedMessageCount: number;
+  droppedExceptionCount: number;
 }
 
 // 辅助函数
@@ -269,6 +271,8 @@ class ConsoleTool extends BaseBrowserToolExecutor {
           messageCount: read.messageCount,
           exceptionCount: read.exceptionCount,
           messageLimitReached: read.messageLimitReached,
+          droppedMessageCount: read.droppedMessageCount,
+          droppedExceptionCount: read.droppedExceptionCount,
         };
 
         return {
@@ -611,6 +615,8 @@ class ConsoleTool extends BaseBrowserToolExecutor {
         messageCount: messages.length,
         exceptionCount: exceptions.length,
         messageLimitReached: limitReached,
+        droppedMessageCount: 0,
+        droppedExceptionCount: 0,
       };
     } catch (error: any) {
       console.error(`ConsoleTool: Error capturing console messages for tab ${tabId}:`, error);

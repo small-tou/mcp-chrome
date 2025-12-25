@@ -5,6 +5,8 @@ export { screenshotTool } from './screenshot';
 export { webFetcherTool, getInteractiveElementsTool } from './web-fetcher';
 export { clickTool, fillTool } from './interaction';
 export { networkRequestTool } from './network-request';
+export { networkCaptureTool } from './network-capture';
+// Legacy exports (for internal use by networkCaptureTool)
 export { networkDebuggerStartTool, networkDebuggerStopTool } from './network-capture-debugger';
 export { networkCaptureStartTool, networkCaptureStopTool } from './network-capture-web-request';
 export { keyboardTool } from './keyboard';

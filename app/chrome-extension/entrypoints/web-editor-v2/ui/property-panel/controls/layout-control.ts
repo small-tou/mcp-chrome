@@ -741,8 +741,8 @@ export function createLayoutControl(options: LayoutControlOptions): DesignContro
   gridGapRow.hidden = true;
 
   // Adjust gridRow and gapRow to fit in two-column layout
-  gridRow.classList.add('we-grid-gap-col');
-  gapRow.classList.add('we-grid-gap-col');
+  gridRow.classList.add('we-grid-gap-col', 'we-grid-gap-col--grid');
+  gapRow.classList.add('we-grid-gap-col', 'we-grid-gap-col--gap');
 
   gridGapRow.append(gridRow, gapRow);
 

@@ -441,6 +441,21 @@ async function stopRecording(): Promise<GifResult> {
       // ignore
     }
 
+    // Best-effort final frame capture to preserve end state
+    try {
+      const frameData = await captureFrame(state.tabId, state.width, state.height, state.ctx);
+      await sendToOffscreen(OFFSCREEN_MESSAGE_TYPES.GIF_ADD_FRAME, {
+        imageData: Array.from(frameData),
+        width: state.width,
+        height: state.height,
+        delay: state.frameDelayCs,
+        maxColors: state.maxColors,
+      });
+      state.frameCount += 1;
+    } catch (error) {
+      console.warn('GIF recorder: Final frame capture error (non-fatal):', error);
+    }
+
     const frameCount = state.frameCount;
     const durationMs = Date.now() - state.startTime;
     const filename = state.filename;

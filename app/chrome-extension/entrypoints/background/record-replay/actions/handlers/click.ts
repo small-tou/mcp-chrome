@@ -41,6 +41,8 @@ async function executeClick<T extends 'click' | 'dblclick'>(
 ): Promise<ActionExecutionResult<T>> {
   const vars = ctx.vars;
   const tabId = ctx.tabId;
+  // Check if StepRunner owns nav-wait (skip internal nav-wait logic)
+  const skipNavWait = ctx.execution?.skipNavWait === true;
 
   if (typeof tabId !== 'number') {
     return failed('TAB_NOT_FOUND', 'No active tab found');
@@ -49,7 +51,8 @@ async function executeClick<T extends 'click' | 'dblclick'>(
   // Ensure page is read before locating element
   await handleCallTool({ name: TOOL_NAMES.BROWSER.READ_PAGE, args: {} });
 
-  const beforeUrl = await readTabUrl(tabId);
+  // Only read beforeUrl if we need to do nav-wait
+  const beforeUrl = skipNavWait ? '' : await readTabUrl(tabId);
   const { selectorTarget, firstCandidateType, firstCssOrAttr } = toSelectorTarget(
     action.params.target,
     vars,
@@ -108,7 +111,12 @@ async function executeClick<T extends 'click' | 'dblclick'>(
     logSelectorFallback(ctx, action.id, String(firstCandidateType), String(resolvedBy));
   }
 
-  // Post-click wait handling
+  // Skip post-click wait if StepRunner handles it
+  if (skipNavWait) {
+    return { status: 'success' };
+  }
+
+  // Post-click wait handling (only when handler owns nav-wait)
   const waitMs = clampInt(
     action.policy?.timeout?.ms ?? ENGINE_CONSTANTS.DEFAULT_WAIT_MS,
     0,

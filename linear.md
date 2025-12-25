@@ -20,9 +20,9 @@
 | Phase 1-4E | ✅ 已完成 | 核心 UI 重构（数据结构、解析、预览条、Thumbs、Stops列表、ColorField绑定） |
 | Phase 5    | ✅ 已完成 | Thumb 拖拽实现                                                            |
 | Phase 6    | ✅ 已完成 | Add/Delete Stop 功能                                                      |
-| Phase 7    | ⏳ 待开始 | Position 输入编辑                                                         |
-| Phase 8    | ⏳ 待开始 | 清理旧代码路径（移除 stop1Row/stop2Row 等遗留代码）                       |
-| Phase 9    | ⏳ 待开始 | 边界情况与可访问性                                                        |
+| Phase 7    | ✅ 已完成 | Position 输入编辑                                                         |
+| Phase 8    | ✅ 已完成 | 清理旧代码路径（移除 stop1Row/stop2Row 等遗留代码）                       |
+| Phase 9    | ✅ 已完成 | 边界情况与可访问性                                                        |
 
 ---
 
@@ -270,35 +270,42 @@ disposer.listen(root, 'keydown', (event) => {
 
 ---
 
-## 待完成任务
+## 已完成任务
 
-### Phase 7: Position 输入编辑
+### Phase 7: Position 输入编辑 ✅
 
-当前 stops list 中的 position 显示为静态文本。需要实现：
+实现了 stops list 中的 position 可编辑功能：
 
-- [ ] 点击 position 区域可编辑
-- [ ] 输入新值后更新模型和 UI
-- [ ] 输入验证（0-100 范围）
-- [ ] Enter 提交，Escape 取消
+- [x] 点击 position 区域可编辑（单例 `selectedStopPosInput` + host 复挂载模式）
+- [x] 输入新值后更新模型和 UI（`setStopPositionById` + `previewGradient`）
+- [x] 输入验证（0-100 范围，通过 `clampPercent` + `wireNumberStepping`）
+- [x] Enter 提交，Escape 取消（`commitSelectedStopPosition` / `cancelSelectedStopPosition`）
+- [x] commit-time 排序（`sortCurrentStopsByPosition`）
+- [x] 聚焦 gating 防止列表重建打断编辑
 
-### Phase 8: 清理旧代码路径
+### Phase 8: 清理旧代码路径 ✅
 
-移除遗留的 2-stop 硬编码：
+移除了所有遗留的 2-stop 硬编码：
 
-- [ ] 移除 `stop1Row`, `stop2Row` DOM 元素
-- [ ] 移除 `stop1ColorValue`, `stop2ColorValue` 变量
-- [ ] 移除 `stop1ColorField`, `stop2ColorField`
-- [ ] 移除 `stop1PosInput`, `stop2PosInput`
-- [ ] 清理 `collectCurrentStops()` 中的遗留逻辑
-- [ ] 清理 `syncLegacyStopFieldsFromModels()`
+- [x] 移除 `stop1Row`, `stop2Row` DOM 元素及 `createStopRow()` 函数
+- [x] 移除 `stop1ColorValue`, `stop2ColorValue` 变量
+- [x] 移除 `stop1ColorField`, `stop2ColorField` 及其 dispose
+- [x] 移除 `stop1PosInput`, `stop2PosInput` 及其 wireNumberStepping/wireTextInput
+- [x] 清理 `collectCurrentStops()` - 直接从 `currentStops` 读取
+- [x] 删除 `syncLegacyStopFieldsFromModels()` 函数
+- [x] 清理各函数中的 legacy 同步代码
 
-### Phase 9: 边界情况与可访问性
+### Phase 9: 边界情况与可访问性 ✅
 
-- [ ] 拖拽越界处理优化
-- [ ] 两个停止点位置相同时的 UI 处理
-- [ ] 完善 `aria-label` 属性
-- [ ] 键盘导航支持（Tab, 方向键）
-- [ ] 屏幕阅读器测试
+实现了可访问性和边界情况处理：
+
+- [x] Thumb 重叠时选中态置顶（z-index 层级：默认1, active 2, dragging 3）
+- [x] Thumb slider ARIA 属性（role="slider", aria-valuemin/max/now/text, aria-orientation）
+- [x] Thumb 方向键调整 position（ArrowLeft/Right/Up/Down 步进1，Shift 步进10）
+- [x] Thumb keyboard session 管理（类似 drag session，支持 Escape 取消）
+- [x] Stops list 方向键导航（ArrowUp/Down 切换选中行）
+- [x] 防御式检查（handleThumbPointerDown 添加 disabled/none 状态检查）
+- [x] Thumb focus/blur 事件处理（聚焦选中，blur 提交）
 
 ---
 
@@ -339,6 +346,76 @@ previewGradient(); // 实时预览（调用 handle.set()）
 commitTransaction(); // 提交到 undo stack
 rollbackTransaction(); // 回滚（如 Escape 取消）
 ```
+
+---
+
+## Phase 10: 渐变色支持扩展 ✅
+
+### 概述
+
+将渐变色支持扩展到属性面板中所有使用颜色的地方，包括边框颜色和文字颜色。
+
+### 实现详情
+
+#### 10.1 gradient-control.ts 参数化
+
+新增配置选项使 GradientControl 可复用：
+
+```typescript
+interface GradientControlOptions {
+  // ... existing options
+  property?: string; // CSS 属性，默认 'background-image'
+  allowNone?: boolean; // 是否显示 None 选项，默认 true
+}
+```
+
+- `property`: 用于 border-image-source 等非 background-image 场景
+- `allowNone`: 用于 text gradient 场景（禁用 None 避免文字不可见）
+
+#### 10.2 border-control.ts 渐变支持
+
+**CSS 实现方案**: 使用 `border-image-source` + `border-image-slice: 1`
+
+**UI 变更**:
+
+- 新增 "Type" 选择器行（solid / gradient）
+- gradient 模式下显示 GradientControl
+- gradient 模式下锁定 Edge 为 "all"（border-image 不支持 per-edge）
+
+**关键函数**:
+
+- `inferBorderColorType()`: 从 border-image-source 推断颜色类型
+- `setColorType()`: 使用 multiStyle 事务切换模式
+- `updateEdgeSelectorState()`: gradient 模式下禁用 edge 选择
+
+#### 10.3 typography-control.ts 渐变支持
+
+**CSS 实现方案**: 使用 `background-image` + `-webkit-background-clip: text` + `-webkit-text-fill-color: transparent`
+
+**UI 变更**:
+
+- 新增 "Type" 选择器行（solid / gradient）
+- gradient 模式下显示 GradientControl（allowNone: false）
+- solid 模式下显示原有 ColorField
+
+**关键函数**:
+
+- `inferTextColorType()`: 检测 background-clip: text 模式
+- `setTextColorType()`: 使用 multiStyle 事务切换模式
+- `isGradientBackgroundValue()`: 检测渐变背景值
+- `isTransparentTextFillColor()`: 检测透明文字填充色
+
+**已知限制**:
+
+- Text gradient 与 Background 控件共用 `background-image` 属性
+- 同一元素不能同时使用 text gradient 和 element background
+- 这是 CSS 本身的限制，在文档中已明确说明
+
+### 技术要点
+
+1. **multiStyle 事务**: 切换模式时原子设置多个相关属性
+2. **refresh 重推断**: 处理外部变更（CSS 面板、Undo/Redo）
+3. **dispose 管理**: 所有新增控件都正确注册 dispose
 
 ---
 

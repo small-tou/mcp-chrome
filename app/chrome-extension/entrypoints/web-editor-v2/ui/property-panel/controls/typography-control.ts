@@ -18,6 +18,7 @@ import { Disposer } from '../../../utils/disposables';
 import type { StyleTransactionHandle, TransactionManager } from '../../../core/transaction-manager';
 import type { DesignTokensService } from '../../../core/design-tokens';
 import { createColorField, type ColorField } from './color-field';
+import { createGradientControl } from './gradient-control';
 import { createInputContainer, type InputContainer } from '../components/input-container';
 import { createIconButtonGroup, type IconButtonGroup } from '../components/icon-button-group';
 import { combineLengthValue, formatLengthForDisplay, hasExplicitUnit } from './css-helpers';
@@ -33,6 +34,10 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const FONT_WEIGHT_VALUES = ['100', '200', '300', '400', '500', '600', '700', '800', '900'] as const;
 const TEXT_ALIGN_VALUES = ['left', 'center', 'right', 'justify'] as const;
 const VERTICAL_ALIGN_VALUES = ['baseline', 'middle', 'top', 'bottom'] as const;
+
+/** Text color type: solid uses 'color' property, gradient uses background-clip: text */
+const TEXT_COLOR_TYPE_VALUES = ['solid', 'gradient'] as const;
+type TextColorType = (typeof TEXT_COLOR_TYPE_VALUES)[number];
 
 type TextAlignValue = (typeof TEXT_ALIGN_VALUES)[number];
 type VerticalAlignValue = (typeof VERTICAL_ALIGN_VALUES)[number];
@@ -258,6 +263,47 @@ function readComputedValue(element: Element, property: string): string {
   }
 }
 
+/**
+ * Check if a value is a gradient background-image.
+ */
+function isGradientBackgroundValue(raw: string): boolean {
+  return /\b(?:linear|radial|conic)-gradient\s*\(/i.test(raw.trim());
+}
+
+/**
+ * Check if text-fill-color is transparent (for gradient text detection).
+ */
+function isTransparentTextFillColor(raw: string): boolean {
+  const v = raw.trim().toLowerCase();
+  if (!v) return false;
+  if (v === 'transparent') return true;
+  // Some browsers compute transparent as rgba(..., 0)
+  if (/^rgba\([^)]*,\s*0\s*\)$/.test(v)) return true;
+  return false;
+}
+
+/**
+ * Infer text color type from element's computed styles.
+ * Returns 'gradient' if background-clip: text pattern is detected.
+ */
+function inferTextColorType(target: Element): TextColorType {
+  const bgImage =
+    readInlineValue(target, 'background-image') || readComputedValue(target, 'background-image');
+  const bgClip =
+    readInlineValue(target, '-webkit-background-clip') ||
+    readComputedValue(target, '-webkit-background-clip');
+  const textFill =
+    readInlineValue(target, '-webkit-text-fill-color') ||
+    readComputedValue(target, '-webkit-text-fill-color');
+
+  const hasGradientBg =
+    bgImage && bgImage.toLowerCase() !== 'none' && isGradientBackgroundValue(bgImage);
+  const hasClipText = bgClip.toLowerCase().includes('text');
+  const hasTransparentFill = isTransparentTextFillColor(textFill);
+
+  return hasGradientBg && hasClipText && hasTransparentFill ? 'gradient' : 'solid';
+}
+
 // =============================================================================
 // Factory
 // =============================================================================
@@ -274,6 +320,7 @@ export function createTypographyControl(options: TypographyControlOptions): Desi
   const disposer = new Disposer();
 
   let currentTarget: Element | null = null;
+  let currentTextColorType: TextColorType = 'solid';
 
   const root = document.createElement('div');
   root.className = 'we-field-group';
@@ -422,6 +469,27 @@ export function createTypographyControl(options: TypographyControlOptions): Desi
   verticalAlignRow.append(verticalAlignLabel, verticalAlignMount);
 
   // ---------------------------------------------------------------------------
+  // Text Color Type selector (solid / gradient)
+  // ---------------------------------------------------------------------------
+  const textColorTypeRow = document.createElement('div');
+  textColorTypeRow.className = 'we-field';
+
+  const textColorTypeLabel = document.createElement('span');
+  textColorTypeLabel.className = 'we-field-label';
+  textColorTypeLabel.textContent = 'Type';
+
+  const textColorTypeSelect = document.createElement('select');
+  textColorTypeSelect.className = 'we-select';
+  textColorTypeSelect.setAttribute('aria-label', 'Text Color Type');
+  for (const v of TEXT_COLOR_TYPE_VALUES) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = v.charAt(0).toUpperCase() + v.slice(1);
+    textColorTypeSelect.append(opt);
+  }
+  textColorTypeRow.append(textColorTypeLabel, textColorTypeSelect);
+
+  // ---------------------------------------------------------------------------
   // Color (with ColorField - TokenPill and TokenPicker are now built into ColorField)
   // ---------------------------------------------------------------------------
   const colorRow = document.createElement('div');
@@ -436,15 +504,36 @@ export function createTypographyControl(options: TypographyControlOptions): Desi
 
   colorRow.append(colorLabel, colorFieldContainer);
 
+  // Gradient mount for text gradient (uses background-image + background-clip: text)
+  const textGradientMount = document.createElement('div');
+
+  // Create combined row for Size and Weight
+  const sizeAndWeightRow = document.createElement('div');
+  sizeAndWeightRow.className = 'we-field-row';
+  fontSizeRow.style.flex = '1';
+  fontSizeRow.style.minWidth = '0';
+  fontWeightRow.style.flex = '1';
+  fontWeightRow.style.minWidth = '0';
+  sizeAndWeightRow.append(fontSizeRow, fontWeightRow);
+
+  // Create combined row for Line Height and Spacing
+  const lineHeightAndSpacingRow = document.createElement('div');
+  lineHeightAndSpacingRow.className = 'we-field-row';
+  lineHeightRow.style.flex = '1';
+  lineHeightRow.style.minWidth = '0';
+  letterSpacingRow.style.flex = '1';
+  letterSpacingRow.style.minWidth = '0';
+  lineHeightAndSpacingRow.append(lineHeightRow, letterSpacingRow);
+
   root.append(
     fontFamilyRow,
-    fontSizeRow,
-    fontWeightRow,
-    lineHeightRow,
-    letterSpacingRow,
+    sizeAndWeightRow,
+    lineHeightAndSpacingRow,
     textAlignRow,
     verticalAlignRow,
+    textColorTypeRow,
     colorRow,
+    textGradientMount,
   );
   container.append(root);
   disposer.add(() => root.remove());
@@ -513,6 +602,23 @@ export function createTypographyControl(options: TypographyControlOptions): Desi
     },
   });
   disposer.add(() => textColorField.dispose());
+
+  // -------------------------------------------------------------------------
+  // Text Gradient Control (uses background-image + background-clip: text)
+  // Note: This intentionally uses background-image which may conflict with
+  // Background control. Users should be aware that text gradient and element
+  // background cannot be used simultaneously on the same element.
+  // -------------------------------------------------------------------------
+  const textGradientControl = createGradientControl({
+    container: textGradientMount,
+    transactionManager,
+    tokensService,
+    property: 'background-image',
+    // Disable 'none' option since transparent text-fill-color with no background
+    // would make text invisible
+    allowNone: false,
+  });
+  disposer.add(() => textGradientControl.dispose());
 
   // -------------------------------------------------------------------------
   // Field state map
@@ -607,6 +713,79 @@ export function createTypographyControl(options: TypographyControlOptions): Desi
   function commitAllTransactions(): void {
     for (const p of PROPS) commitTransaction(p);
   }
+
+  // -------------------------------------------------------------------------
+  // Text Color Type (Solid / Gradient)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Update visibility of color-related rows based on currentTextColorType.
+   */
+  function updateTextColorTypeVisibility(): void {
+    colorRow.hidden = currentTextColorType !== 'solid';
+    textGradientMount.hidden = currentTextColorType !== 'gradient';
+  }
+
+  /**
+   * Set text color type and apply necessary CSS changes.
+   * Uses multiStyle transaction to atomically set background-clip text properties.
+   */
+  function setTextColorType(type: TextColorType): void {
+    const target = currentTarget;
+
+    currentTextColorType = type;
+    textColorTypeSelect.value = type;
+    updateTextColorTypeVisibility();
+
+    if (!target || !target.isConnected) return;
+
+    // Ensure we don't leave an open 'color' handle when switching modes
+    commitTransaction('color');
+
+    // Use multiStyle to atomically manage text gradient properties
+    const handle = transactionManager.beginMultiStyle(target, [
+      'background-image',
+      '-webkit-background-clip',
+      '-webkit-text-fill-color',
+    ]);
+    if (!handle) return;
+
+    if (type === 'solid') {
+      // Clear text gradient properties when switching to solid color
+      handle.set({
+        'background-image': '',
+        '-webkit-background-clip': '',
+        '-webkit-text-fill-color': '',
+      });
+    } else {
+      // Set up text gradient properties
+      const inlineBg = readInlineValue(target, 'background-image');
+      const computedBg = readComputedValue(target, 'background-image');
+      const currentBg = inlineBg || computedBg;
+
+      // Use existing gradient or provide a default
+      const hasValidGradient = currentBg && isGradientBackgroundValue(currentBg);
+      const gradientValue = hasValidGradient
+        ? currentBg
+        : 'linear-gradient(90deg, #000000, #ffffff)';
+
+      handle.set({
+        'background-image': gradientValue,
+        '-webkit-background-clip': 'text',
+        '-webkit-text-fill-color': 'transparent',
+      });
+    }
+
+    handle.commit({ merge: true });
+  }
+
+  // Wire text color type selector change event
+  disposer.listen(textColorTypeSelect, 'change', () => {
+    const type = textColorTypeSelect.value as TextColorType;
+    setTextColorType(type);
+    textGradientControl.refresh();
+    syncAllFields();
+  });
 
   function syncField(property: TypographyProperty, force = false): void {
     const field = fields[property];
@@ -786,6 +965,9 @@ export function createTypographyControl(options: TypographyControlOptions): Desi
 
   function syncAllFields(): void {
     for (const p of PROPS) syncField(p);
+    const hasTarget = Boolean(currentTarget && currentTarget.isConnected);
+    textColorTypeSelect.disabled = !hasTarget;
+    updateTextColorTypeVisibility();
   }
 
   function wireSelect(property: TypographyProperty): void {
@@ -942,12 +1124,36 @@ export function createTypographyControl(options: TypographyControlOptions): Desi
     if (disposer.isDisposed) return;
     if (element !== currentTarget) commitAllTransactions();
     currentTarget = element;
+
+    // Infer text color type from element styles
+    if (element && element.isConnected) {
+      currentTextColorType = inferTextColorType(element);
+    } else {
+      currentTextColorType = 'solid';
+    }
+    textColorTypeSelect.value = currentTextColorType;
+    updateTextColorTypeVisibility();
+
+    // Update gradient control target
+    textGradientControl.setTarget(element);
     syncAllFields();
     // Token picker target is now managed by ColorField internally via getTokenTarget callback
   }
 
   function refresh(): void {
     if (disposer.isDisposed) return;
+
+    // Re-infer text color type from element to handle external changes (CSS panel, Undo/Redo)
+    const target = currentTarget;
+    if (target && target.isConnected) {
+      const inferredType = inferTextColorType(target);
+      if (inferredType !== currentTextColorType) {
+        currentTextColorType = inferredType;
+        textColorTypeSelect.value = inferredType;
+      }
+    }
+
+    textGradientControl.refresh();
     syncAllFields();
   }
 

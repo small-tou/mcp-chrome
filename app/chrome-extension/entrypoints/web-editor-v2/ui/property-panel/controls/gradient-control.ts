@@ -77,6 +77,19 @@ interface ThumbDragSession {
   thumbElement: HTMLElement;
 }
 
+/**
+ * Keyboard session state for thumb stepping (Arrow keys).
+ * Maintains a snapshot for Escape rollback and keeps thumbs stable during stepping.
+ */
+interface ThumbKeyboardSession {
+  /** ID of the stop being adjusted */
+  stopId: StopId;
+  /** Position snapshot before stepping started (for rollback on Escape) */
+  initialPositions: Map<StopId, number>;
+  /** The thumb element being adjusted (focus anchor) */
+  thumbElement: HTMLElement;
+}
+
 /** Basic gradient stop (used in parsing and UI state) */
 interface GradientStop {
   color: string;
@@ -986,14 +999,33 @@ export interface GradientControlOptions {
   transactionManager: TransactionManager;
   /** Optional: Design tokens service for TokenPill/TokenPicker integration (Phase 5.3) */
   tokensService?: DesignTokensService;
+  /**
+   * CSS property to write the gradient value to.
+   * Defaults to 'background-image'.
+   * Use 'border-image-source' for border gradient support.
+   */
+  property?: string;
+  /**
+   * Whether to show the 'None' option in the gradient type selector.
+   * Defaults to true.
+   * Set to false for text gradient mode where 'none' would make text invisible.
+   */
+  allowNone?: boolean;
 }
 
 export function createGradientControl(options: GradientControlOptions): DesignControl {
-  const { container, transactionManager, tokensService } = options;
+  const {
+    container,
+    transactionManager,
+    tokensService,
+    property: cssProperty = 'background-image',
+    allowNone = true,
+  } = options;
   const disposer = new Disposer();
 
   let currentTarget: Element | null = null;
-  let currentType: GradientType = 'none';
+  // Default type is 'linear' when allowNone is false, otherwise 'none'
+  let currentType: GradientType = allowNone ? 'none' : 'linear';
 
   // Current stops array - supports N stops with stable identity
   let currentStops: StopModel[] = createDefaultStopModels();
@@ -1002,9 +1034,8 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
   // Active thumb drag session (null when not dragging)
   let thumbDrag: ThumbDragSession | null = null;
 
-  // Legacy values for backward compatibility with current 2-stop UI
-  let stop1ColorValue = DEFAULT_STOP_1.color;
-  let stop2ColorValue = DEFAULT_STOP_2.color;
+  // Active thumb keyboard session (null when not stepping via arrow keys)
+  let thumbKeyboard: ThumbKeyboardSession | null = null;
 
   let backgroundHandle: StyleTransactionHandle | null = null;
 
@@ -1066,50 +1097,19 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     return { row, select };
   }
 
-  function createStopRow(
-    labelText: string,
-    posAriaLabel: string,
-  ): {
-    row: HTMLDivElement;
-    colorFieldContainer: HTMLDivElement;
-    posInput: HTMLInputElement;
-  } {
-    const row = document.createElement('div');
-    row.className = 'we-field';
-
-    const label = document.createElement('span');
-    label.className = 'we-field-label';
-    label.textContent = labelText;
-
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'display:flex;flex:1;min-width:0;gap:4px;';
-
-    const colorFieldContainer = document.createElement('div');
-    colorFieldContainer.style.cssText = 'flex:1;min-width:0;';
-
-    const posInput = document.createElement('input');
-    posInput.type = 'text';
-    posInput.className = 'we-input';
-    posInput.autocomplete = 'off';
-    posInput.spellcheck = false;
-    posInput.inputMode = 'decimal';
-    posInput.setAttribute('aria-label', posAriaLabel);
-    posInput.style.cssText = 'flex:0 0 56px;text-align:right;';
-    posInput.placeholder = '0';
-
-    wrapper.append(colorFieldContainer, posInput);
-    row.append(label, wrapper);
-    return { row, colorFieldContainer, posInput };
-  }
-
   // -------------------------------------------------------------------------
   // Create UI Elements
   // -------------------------------------------------------------------------
 
+  // Build gradient type options based on allowNone parameter
+  const gradientTypeOptions = allowNone
+    ? GRADIENT_TYPES
+    : GRADIENT_TYPES.filter((t) => t.value !== 'none');
+
   const { row: typeRow, select: typeSelect } = createSelectRow(
     'Type',
     'Gradient Type',
-    GRADIENT_TYPES,
+    gradientTypeOptions,
   );
 
   // Gradient preview bar
@@ -1160,18 +1160,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
   stopsList.className = 'we-gradient-stops-list';
   stopsList.setAttribute('role', 'list');
 
-  const {
-    row: stop1Row,
-    colorFieldContainer: stop1ColorContainer,
-    posInput: stop1PosInput,
-  } = createStopRow('Stop 1', 'Stop 1 Position (%)');
-
-  const {
-    row: stop2Row,
-    colorFieldContainer: stop2ColorContainer,
-    posInput: stop2PosInput,
-  } = createStopRow('Stop 2', 'Stop 2 Position (%)');
-
   root.append(
     typeRow,
     gradientBarRow,
@@ -1181,8 +1169,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     posYRow,
     stopsHeaderRow,
     stopsList,
-    stop1Row,
-    stop2Row,
   );
   container.append(root);
   disposer.add(() => root.remove());
@@ -1212,63 +1198,84 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     shiftStep: 10,
     altStep: 0.1,
   });
-  wireNumberStepping(disposer, stop1PosInput, {
+
+  // ---------------------------------------------------------------------------
+  // Single Position Input bound to selectedStopId (Phase 7)
+  // Host is re-parented into the selected row's position editor slot.
+  // ---------------------------------------------------------------------------
+  const selectedStopPosHost = document.createElement('div');
+
+  const selectedStopPosInput = document.createElement('input');
+  selectedStopPosInput.type = 'text';
+  selectedStopPosInput.className = 'we-gradient-stop-pos-input';
+  selectedStopPosInput.autocomplete = 'off';
+  selectedStopPosInput.spellcheck = false;
+  selectedStopPosInput.inputMode = 'decimal';
+  selectedStopPosInput.placeholder = '0';
+  selectedStopPosInput.setAttribute('aria-label', 'Selected Stop Position (%)');
+  selectedStopPosHost.append(selectedStopPosInput);
+
+  // Enable keyboard stepping (↑/↓ to increment/decrement)
+  wireNumberStepping(disposer, selectedStopPosInput, {
     mode: 'number',
     min: 0,
     max: 100,
     step: 1,
     shiftStep: 10,
-    altStep: 0.1,
-  });
-  wireNumberStepping(disposer, stop2PosInput, {
-    mode: 'number',
-    min: 0,
-    max: 100,
-    step: 1,
-    shiftStep: 10,
-    altStep: 0.1,
   });
 
-  // Create color fields
-  const stop1ColorField: ColorField = createColorField({
-    container: stop1ColorContainer,
-    ariaLabel: 'Stop 1 Color',
-    tokensService,
-    getTokenTarget: () => currentTarget,
-    onInput: (value) => {
-      stop1ColorValue = value;
-      previewGradient();
-    },
-    onCommit: () => {
-      commitTransaction();
-      syncAllFields();
-    },
-    onCancel: () => {
-      rollbackTransaction();
-      syncAllFields(true);
-    },
-  });
-  disposer.add(() => stop1ColorField.dispose());
+  /**
+   * Commit the position edit: sort stops and finalize the transaction.
+   * Called on blur or Enter key.
+   */
+  function commitSelectedStopPosition(): void {
+    // Commit-time sort ensures CSS output is monotonically ordered
+    sortCurrentStopsByPosition();
 
-  const stop2ColorField: ColorField = createColorField({
-    container: stop2ColorContainer,
-    ariaLabel: 'Stop 2 Color',
-    tokensService,
-    getTokenTarget: () => currentTarget,
-    onInput: (value) => {
-      stop2ColorValue = value;
+    // Only commit if we have an active transaction
+    if (backgroundHandle) {
       previewGradient();
-    },
-    onCommit: () => {
       commitTransaction();
-      syncAllFields();
-    },
-    onCancel: () => {
-      rollbackTransaction();
-      syncAllFields(true);
-    },
+    }
+    syncAllFields();
+  }
+
+  /**
+   * Cancel the position edit and rollback to the original value.
+   * Called on Escape key.
+   */
+  function cancelSelectedStopPosition(): void {
+    rollbackTransaction();
+    syncAllFields(true);
+  }
+
+  // Handle input changes - update model and preview in real-time
+  disposer.listen(selectedStopPosInput, 'input', () => {
+    const id = selectedStopId;
+    if (!id) return;
+
+    const parsed = parseNumber(selectedStopPosInput.value);
+    if (parsed === null) return;
+
+    // Update model and preview in real-time
+    setStopPositionById(id, parsed);
+    previewGradient();
   });
-  disposer.add(() => stop2ColorField.dispose());
+
+  // Commit on blur
+  disposer.listen(selectedStopPosInput, 'blur', commitSelectedStopPosition);
+
+  // Handle Enter/Escape keys
+  disposer.listen(selectedStopPosInput, 'keydown', (event: KeyboardEvent) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitSelectedStopPosition();
+      selectedStopPosInput.blur();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelSelectedStopPosition();
+    }
+  });
 
   // Single ColorField bound to selectedStopId (Phase 4E)
   // Host is re-parented into the selected row's editor slot.
@@ -1286,16 +1293,8 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
       const index = currentStops.findIndex((s) => s.id === id);
       if (index < 0) return;
 
-      // Update model (new path)
+      // Update model
       currentStops[index]!.color = value;
-
-      // Sync legacy values (old path - Phase 4H will remove)
-      if (index === 0) stop1ColorValue = value;
-      if (index === 1) stop2ColorValue = value;
-
-      // Keep hidden legacy fields consistent
-      if (index === 0) stop1ColorField.setValue(value);
-      if (index === 1) stop2ColorField.setValue(value);
 
       // Update placeholder when switching away from var()
       selectedStopColorField.setPlaceholder(
@@ -1327,7 +1326,7 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
 
     if (backgroundHandle) return backgroundHandle;
 
-    backgroundHandle = transactionManager.beginStyle(target, 'background-image');
+    backgroundHandle = transactionManager.beginStyle(target, cssProperty);
     return backgroundHandle;
   }
 
@@ -1361,10 +1360,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
 
     const clamped = clampPercent(position);
     currentStops[index]!.position = clamped;
-
-    // Sync legacy position inputs for backward compatibility (Phase 4H will remove)
-    if (index === 0) stop1PosInput.value = String(Math.round(clamped));
-    if (index === 1) stop2PosInput.value = String(Math.round(clamped));
   }
 
   /**
@@ -1378,12 +1373,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
         stop.position = savedPos;
       }
     }
-
-    // Sync legacy position inputs
-    const stop1 = currentStops[0];
-    const stop2 = currentStops[1];
-    if (stop1) stop1PosInput.value = String(Math.round(stop1.position));
-    if (stop2) stop2PosInput.value = String(Math.round(stop2.position));
   }
 
   /**
@@ -1400,6 +1389,7 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
 
     // Remove dragging visual state
     gradientBar.classList.remove('we-gradient-bar--dragging');
+    session.thumbElement.classList.remove('we-gradient-thumb--dragging');
 
     // Best-effort: release capture (e.g., Escape cancel while pointer is still down)
     try {
@@ -1409,6 +1399,11 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     }
 
     if (commit) {
+      // Commit-time sort ensures CSS output is monotonically ordered
+      sortCurrentStopsByPosition();
+
+      // Update preview with sorted positions before committing
+      previewGradient();
       commitTransaction();
       syncAllFields();
     } else {
@@ -1430,6 +1425,163 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     const relativeX = clientX - rect.left;
     const rawPercent = (relativeX / rect.width) * 100;
     return clampPercent(rawPercent);
+  }
+
+  // -------------------------------------------------------------------------
+  // Thumb Keyboard Stepping (Phase 9)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start a keyboard stepping session for a thumb.
+   * Similar to drag session but triggered by arrow keys.
+   */
+  function startThumbKeyboardSession(stopId: StopId, thumbElement: HTMLElement): void {
+    if (thumbDrag) return;
+    if (currentType === 'none') return;
+    if (typeSelect.disabled) return;
+
+    // If session already exists for this stop, don't restart
+    if (thumbKeyboard?.stopId === stopId) return;
+
+    // If switching stops, commit previous session first
+    if (thumbKeyboard) {
+      endThumbKeyboard(true);
+    }
+
+    // Snapshot all positions for potential rollback
+    const initialPositions = new Map<StopId, number>();
+    for (const stop of currentStops) {
+      initialPositions.set(stop.id, stop.position);
+    }
+
+    thumbKeyboard = { stopId, initialPositions, thumbElement };
+    beginTransaction();
+  }
+
+  /**
+   * End the keyboard stepping session.
+   * @param commit - If true, commit changes; if false, rollback to initial state
+   */
+  function endThumbKeyboard(commit: boolean): void {
+    const session = thumbKeyboard;
+    if (!session) return;
+    thumbKeyboard = null;
+
+    if (commit) {
+      // Commit-time sort keeps CSS output monotonic
+      sortCurrentStopsByPosition();
+      previewGradient();
+      commitTransaction();
+      syncAllFields();
+    } else {
+      restoreStopPositions(session.initialPositions);
+      rollbackTransaction();
+      syncAllFields(true);
+    }
+  }
+
+  /**
+   * Handle focus on a thumb - select the corresponding stop.
+   */
+  function handleThumbFocus(event: FocusEvent): void {
+    if (thumbDrag) return;
+    if (currentType === 'none') return;
+    if (typeSelect.disabled) return;
+
+    const thumb = event.currentTarget as HTMLElement;
+    const stopId = thumb.dataset.stopId;
+    if (!stopId) return;
+
+    if (selectedStopId !== stopId) {
+      selectedStopId = stopId;
+      // Preserve thumbs to avoid focus loss during selection sync
+      updateGradientBar({ preserveThumbs: true });
+    }
+  }
+
+  /**
+   * Handle blur on a thumb - commit any active keyboard session.
+   */
+  function handleThumbBlur(event: FocusEvent): void {
+    const session = thumbKeyboard;
+    if (!session) return;
+
+    // Only commit if blur is from the session's thumb
+    const thumb = event.currentTarget as HTMLElement;
+    if (thumb !== session.thumbElement) return;
+
+    // Commit on blur (similar to input field behavior)
+    endThumbKeyboard(true);
+  }
+
+  /**
+   * Handle keydown on a thumb - arrow keys for stepping, Escape for cancel.
+   */
+  function handleThumbKeyDown(event: KeyboardEvent): void {
+    // Preserve navigation shortcuts (Cmd/Ctrl + Arrow for cursor movement)
+    if (event.metaKey || event.ctrlKey) return;
+    if (thumbDrag) return;
+    if (currentType === 'none') return;
+    if (typeSelect.disabled) return;
+
+    const thumb = event.currentTarget as HTMLElement;
+    const stopId = thumb.dataset.stopId;
+    if (!stopId) return;
+
+    // Escape cancels the keyboard session
+    if (event.key === 'Escape') {
+      const session = thumbKeyboard;
+      if (!session || session.stopId !== stopId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      endThumbKeyboard(false);
+      return;
+    }
+
+    // Handle arrow keys for position adjustment
+    const isArrow =
+      event.key === 'ArrowLeft' ||
+      event.key === 'ArrowRight' ||
+      event.key === 'ArrowUp' ||
+      event.key === 'ArrowDown';
+    if (!isArrow) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    // ArrowLeft/ArrowDown: decrease, ArrowRight/ArrowUp: increase
+    // Shift modifier: step by 10 instead of 1
+    const sign = event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 1;
+    const step = event.shiftKey ? 10 : 1;
+    const delta = sign * step;
+
+    // Ensure stop is selected and session is active
+    selectedStopId = stopId;
+    startThumbKeyboardSession(stopId, thumb);
+
+    const idx = currentStops.findIndex((s) => s.id === stopId);
+    if (idx < 0) return;
+
+    setStopPositionById(stopId, currentStops[idx]!.position + delta);
+    previewGradient();
+  }
+
+  /**
+   * Sync slider ARIA attributes on a thumb element.
+   * Provides accessible name and value for screen readers.
+   */
+  function syncThumbSliderAria(thumb: HTMLElement, position: number): void {
+    const clamped = clampPercent(position);
+    const rounded = Math.round(clamped * 100) / 100;
+    const value = Object.is(rounded, -0) ? 0 : rounded;
+
+    thumb.setAttribute('role', 'slider');
+    thumb.setAttribute('aria-label', 'Gradient stop position');
+    thumb.setAttribute('aria-valuemin', '0');
+    thumb.setAttribute('aria-valuemax', '100');
+    thumb.setAttribute('aria-valuenow', String(value));
+    thumb.setAttribute('aria-valuetext', `${value}%`);
+    thumb.setAttribute('aria-orientation', 'horizontal');
   }
 
   // -------------------------------------------------------------------------
@@ -1529,32 +1681,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
   }
 
   /**
-   * Sync legacy stop fields (stop1/stop2) from currentStops model.
-   * Required for backward compatibility until Phase 8 cleanup.
-   */
-  function syncLegacyStopFieldsFromModels(): void {
-    const stop1 = currentStops[0];
-    const stop2 = currentStops[1];
-    if (!stop1 || !stop2) return;
-
-    stop1ColorValue = stop1.color;
-    stop2ColorValue = stop2.color;
-
-    stop1ColorField.setValue(stop1.color);
-    stop2ColorField.setValue(stop2.color);
-
-    stop1ColorField.setPlaceholder(
-      needsColorPlaceholder(stop1.color) ? (stop1.placeholderColor ?? '') : '',
-    );
-    stop2ColorField.setPlaceholder(
-      needsColorPlaceholder(stop2.color) ? (stop2.placeholderColor ?? '') : '',
-    );
-
-    stop1PosInput.value = String(Math.round(clampPercent(stop1.position)));
-    stop2PosInput.value = String(Math.round(clampPercent(stop2.position)));
-  }
-
-  /**
    * Get a suggested position for adding a new stop.
    * Returns the midpoint between the selected stop and its next neighbor.
    */
@@ -1630,7 +1756,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     selectedStopId = newStop.id;
     sortCurrentStopsByPosition();
 
-    syncLegacyStopFieldsFromModels();
     previewGradient();
     commitTransaction();
 
@@ -1669,7 +1794,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     }
 
     sortCurrentStopsByPosition();
-    syncLegacyStopFieldsFromModels();
     previewGradient();
     commitTransaction();
   }
@@ -1758,7 +1882,7 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
         // Update position and color
         thumb.style.left = `${clampPercent(stop.position)}%`;
         thumb.style.backgroundColor = preview.color;
-        thumb.setAttribute('aria-label', `Select stop at ${Math.round(stop.position)}%`);
+        syncThumbSliderAria(thumb, stop.position);
 
         // Update active state
         const isActive = stopId === selectedStopId;
@@ -1783,10 +1907,15 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
         thumb.dataset.stopId = model.id;
         thumb.style.left = `${clampPercent(stop.position)}%`;
         thumb.style.backgroundColor = preview.color;
-        thumb.setAttribute('aria-label', `Select stop at ${Math.round(stop.position)}%`);
+        syncThumbSliderAria(thumb, stop.position);
 
         // Pointer event handlers for drag (Phase 5)
         thumb.addEventListener('pointerdown', handleThumbPointerDown);
+
+        // Keyboard and focus handlers (Phase 9)
+        thumb.addEventListener('keydown', handleThumbKeyDown);
+        thumb.addEventListener('focus', handleThumbFocus);
+        thumb.addEventListener('blur', handleThumbBlur);
 
         gradientThumbs.append(thumb);
       }
@@ -1810,6 +1939,10 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     // Prevent re-entry if drag is already in progress
     if (thumbDrag) return;
 
+    // Defensive: don't allow drag when disabled or none type
+    if (currentType === 'none') return;
+    if (typeSelect.disabled) return;
+
     // Only respond to primary button (left click) and primary pointer
     if (event.button !== 0) return;
     if (!event.isPrimary) return;
@@ -1817,6 +1950,12 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     const thumb = event.currentTarget as HTMLElement;
     const stopId = thumb.dataset.stopId;
     if (!stopId) return;
+
+    // If a keyboard stepping session is active, transition to drag
+    // (share the same transaction handle)
+    if (thumbKeyboard) {
+      thumbKeyboard = null;
+    }
 
     // Prevent default to avoid text selection, button activation, etc.
     event.preventDefault();
@@ -1839,8 +1978,9 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
       thumbElement: thumb,
     };
 
-    // Add visual feedback
+    // Add visual feedback - dragging thumb raised above others
     gradientBar.classList.add('we-gradient-bar--dragging');
+    thumb.classList.add('we-gradient-thumb--dragging');
 
     // Capture pointer for reliable tracking outside element bounds
     try {
@@ -1934,12 +2074,16 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     if (currentType === 'none') return;
     if (models.length === 0 || stops.length === 0) return;
 
-    const formatPercentLabel = (value: number): string => {
+    /**
+     * Format position value for display (e.g., "50%")
+     */
+    const formatPercentValue = (value: number): number => {
       const clamped = clampPercent(value);
       const rounded = Math.round(clamped * 100) / 100;
-      const normalized = Object.is(rounded, -0) ? 0 : rounded;
-      return `${normalized}%`;
+      return Object.is(rounded, -0) ? 0 : rounded;
     };
+
+    const formatPercentLabel = (value: number): string => `${formatPercentValue(value)}%`;
 
     // Build rows with original index for stable ordering
     const rows = stops
@@ -1952,7 +2096,8 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
       .filter((r) => Boolean(r.model && r.preview))
       .sort((a, b) => a.stop.position - b.stop.position || a.index - b.index);
 
-    for (const r of rows) {
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const r = rows[rowIndex]!;
       const model = r.model!;
       const stop = r.stop;
       const preview = r.preview!;
@@ -1967,10 +2112,28 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
       row.tabIndex = 0;
       row.setAttribute('aria-label', `Select stop at ${formatPercentLabel(stop.position)}`);
 
-      // Position column
-      const pos = document.createElement('span');
+      // Position column (Phase 7: static + editor dual-mode)
+      const pos = document.createElement('div');
       pos.className = 'we-gradient-stop-pos';
-      pos.textContent = formatPercentLabel(stop.position);
+
+      // Static display (shown when not selected)
+      const posStatic = document.createElement('span');
+      posStatic.className = 'we-gradient-stop-pos-static';
+      posStatic.textContent = formatPercentLabel(stop.position);
+
+      // Position editor slot (shown when selected)
+      const posEditor = document.createElement('div');
+      posEditor.className = 'we-gradient-stop-pos-editor';
+
+      if (isActive) {
+        posEditor.append(selectedStopPosHost);
+        // Avoid resetting while user is typing
+        if (!isPositionInputFocused()) {
+          selectedStopPosInput.value = String(formatPercentValue(stop.position));
+        }
+      }
+
+      pos.append(posStatic, posEditor);
 
       // Color column
       const color = document.createElement('div');
@@ -2026,7 +2189,14 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
         removeStopById(model.id);
       });
 
-      // Focus the color field input when needed
+      // Focus helpers for position and color inputs
+      const focusSelectedPosInput = () => {
+        queueMicrotask(() => {
+          selectedStopPosInput.focus();
+          selectedStopPosInput.select();
+        });
+      };
+
       const focusSelectedColorField = () => {
         queueMicrotask(() => {
           const input =
@@ -2035,11 +2205,12 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
         });
       };
 
-      // Click to select
-      const selectThisRow = (opts?: { focusColor?: boolean }) => {
+      // Click to select (with optional focus target)
+      const selectThisRow = (opts?: { focusColor?: boolean; focusPosition?: boolean }) => {
         selectedStopId = model.id;
         updateGradientBar();
         if (opts?.focusColor) focusSelectedColorField();
+        if (opts?.focusPosition) focusSelectedPosInput();
       };
 
       row.addEventListener('click', (event) => {
@@ -2049,14 +2220,55 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
       });
 
       row.addEventListener('keydown', (event: KeyboardEvent) => {
-        if (model.id === selectedStopId) return;
-        if (event.key === 'Enter' || event.key === ' ') {
+        // Don't hijack keys while user is editing text inputs inside the row
+        if (isTextInputLike(event.target)) return;
+
+        // Arrow key navigation between rows (Phase 9)
+        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          event.preventDefault();
+          event.stopPropagation();
+
+          const nextIndex =
+            event.key === 'ArrowUp'
+              ? Math.max(0, rowIndex - 1)
+              : Math.min(rows.length - 1, rowIndex + 1);
+          if (nextIndex === rowIndex) return;
+
+          const nextModel = rows[nextIndex]?.model;
+          if (!nextModel) return;
+
+          selectedStopId = nextModel.id;
+          updateGradientBar();
+
+          // Focus the next row after DOM update
+          queueMicrotask(() => {
+            const nextRow = stopsList.querySelector<HTMLElement>(
+              `.we-gradient-stop-row[data-stop-id="${nextModel.id}"]`,
+            );
+            nextRow?.focus();
+          });
+          return;
+        }
+
+        // Enter/Space to select (only if not already selected)
+        if (model.id !== selectedStopId && (event.key === 'Enter' || event.key === ' ')) {
           event.preventDefault();
           selectThisRow();
         }
       });
 
-      // Clicking the color static area selects and focuses the editor
+      // Clicking the position area selects and focuses the position editor
+      posStatic.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (model.id === selectedStopId) {
+          focusSelectedPosInput();
+          return;
+        }
+        selectThisRow({ focusPosition: true });
+      });
+
+      // Clicking the color static area selects and focuses the color editor
       colorStatic.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -2081,9 +2293,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     stopsHeaderRow.hidden = currentType === 'none';
     stopsList.hidden = currentType === 'none';
     stopsAddBtn.disabled = typeSelect.disabled || currentType === 'none';
-    // Phase 4E: hide legacy stop rows (Phase 4H will remove them entirely)
-    stop1Row.hidden = true;
-    stop2Row.hidden = true;
   }
 
   function setAllDisabled(disabled: boolean): void {
@@ -2092,11 +2301,8 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     shapeSelect.disabled = disabled;
     posXInput.disabled = disabled;
     posYInput.disabled = disabled;
-    stop1PosInput.disabled = disabled;
-    stop2PosInput.disabled = disabled;
     stopsAddBtn.disabled = disabled;
-    stop1ColorField.setDisabled(disabled);
-    stop2ColorField.setDisabled(disabled);
+    selectedStopPosInput.disabled = disabled || currentType === 'none';
     selectedStopColorField.setDisabled(disabled || currentType === 'none');
   }
 
@@ -2106,24 +2312,21 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     posXInput.value = '';
     posYInput.value = '';
 
-    stop1PosInput.value = String(DEFAULT_STOP_1.position);
-    stop2PosInput.value = String(DEFAULT_STOP_2.position);
-
     // Reset stops array with new models (fresh IDs)
     currentStops = createDefaultStopModels();
     selectedStopId = currentStops[0]?.id ?? null;
 
-    stop1ColorValue = DEFAULT_STOP_1.color;
-    stop2ColorValue = DEFAULT_STOP_2.color;
-
-    stop1ColorField.setValue(DEFAULT_STOP_1.color);
-    stop2ColorField.setValue(DEFAULT_STOP_2.color);
-    stop1ColorField.setPlaceholder('');
-    stop2ColorField.setPlaceholder('');
-
     if (!options.skipPreview) {
       updateGradientBar();
     }
+  }
+
+  /**
+   * Check if the position input is currently focused.
+   * Used to prevent list re-rendering while editing.
+   */
+  function isPositionInputFocused(): boolean {
+    return isFieldFocused(selectedStopPosInput);
   }
 
   function isEditing(): boolean {
@@ -2134,10 +2337,7 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
       isFieldFocused(shapeSelect) ||
       isFieldFocused(posXInput) ||
       isFieldFocused(posYInput) ||
-      isFieldFocused(stop1PosInput) ||
-      isFieldFocused(stop2PosInput) ||
-      stop1ColorField.isFocused() ||
-      stop2ColorField.isFocused() ||
+      isPositionInputFocused() ||
       selectedStopColorField.isFocused()
     );
   }
@@ -2215,19 +2415,11 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
    * Returns GradientStop[] for CSS generation (strips id field).
    */
   function collectCurrentStops(): GradientStop[] {
-    const c1 = stop1ColorValue.trim() || DEFAULT_STOP_1.color;
-    const c2 = stop2ColorValue.trim() || DEFAULT_STOP_2.color;
-    const p1 = clampPercent(parseNumber(stop1PosInput.value) ?? DEFAULT_STOP_1.position);
-    const p2 = clampPercent(parseNumber(stop2PosInput.value) ?? DEFAULT_STOP_2.position);
-
-    const defaultModels = createDefaultStopModels();
-    const baseStops = currentStops.length >= 2 ? currentStops : defaultModels;
-
-    return baseStops.map((s, i) => {
-      if (i === 0) return { color: c1, position: p1 };
-      if (i === 1) return { color: c2, position: p2 };
-      return { color: s.color.trim() || DEFAULT_STOP_1.color, position: clampPercent(s.position) };
-    });
+    const baseStops = currentStops.length >= 2 ? currentStops : createDefaultStopModels();
+    return baseStops.map((s) => ({
+      color: s.color.trim() || DEFAULT_STOP_1.color,
+      position: clampPercent(s.position),
+    }));
   }
 
   /**
@@ -2242,12 +2434,14 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
   function previewGradient(): void {
     if (disposer.isDisposed) return;
 
-    // Avoid re-rendering stops list while dragging or editing the selected ColorField,
-    // otherwise thumbs may lose pointer capture and the input can lose focus/caret.
+    // Avoid re-rendering stops list while dragging, keyboard stepping, or editing stop editors,
+    // otherwise thumbs may lose pointer capture/focus and inputs can lose focus/caret.
     const isDragging = thumbDrag !== null;
+    const isKeyboardStepping = thumbKeyboard !== null;
+    const isEditingStopFields = selectedStopColorField.isFocused() || isPositionInputFocused();
     updateGradientBar({
-      preserveThumbs: isDragging,
-      refreshStopsList: isDragging ? false : !selectedStopColorField.isFocused(),
+      preserveThumbs: isDragging || isKeyboardStepping,
+      refreshStopsList: isDragging || isKeyboardStepping ? false : !isEditingStopFields,
     });
 
     const target = currentTarget;
@@ -2268,8 +2462,10 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
 
     if (!target || !target.isConnected) {
       setAllDisabled(true);
-      currentType = 'none';
-      typeSelect.value = 'none';
+      // Use 'linear' as default when 'none' is not allowed
+      const defaultType = allowNone ? 'none' : 'linear';
+      currentType = defaultType;
+      typeSelect.value = defaultType;
       resetDefaults();
       updateRowVisibility();
       updateGradientBar();
@@ -2280,9 +2476,9 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
 
     if (isEditing() && !force) return;
 
-    const inlineValue = readInlineValue(target, 'background-image');
+    const inlineValue = readInlineValue(target, cssProperty);
     const needsComputed = !inlineValue || /\bvar\s*\(/i.test(inlineValue);
-    const computedValue = needsComputed ? readComputedValue(target, 'background-image') : '';
+    const computedValue = needsComputed ? readComputedValue(target, cssProperty) : '';
 
     const inlineParsed = !isNoneValue(inlineValue) ? parseGradient(inlineValue) : null;
     const computedParsed = !isNoneValue(computedValue) ? parseGradient(computedValue) : null;
@@ -2318,8 +2514,10 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     resetDefaults({ skipPreview: true });
 
     if (!parsed) {
-      currentType = 'none';
-      typeSelect.value = 'none';
+      // Use 'linear' as default when 'none' is not allowed
+      const defaultType = allowNone ? 'none' : 'linear';
+      currentType = defaultType;
+      typeSelect.value = defaultType;
       updateRowVisibility();
       updateGradientBar();
       return;
@@ -2347,27 +2545,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
     if (!selectedStopId || !currentStops.some((s) => s.id === selectedStopId)) {
       selectedStopId = currentStops[0]?.id ?? null;
     }
-
-    // UI currently only shows first 2 stops
-    const stop1 = currentStops[0] ?? DEFAULT_STOP_1;
-    const stop2 = currentStops[1] ?? DEFAULT_STOP_2;
-
-    stop1ColorValue = stop1.color;
-    stop2ColorValue = stop2.color;
-
-    stop1ColorField.setValue(stop1.color);
-    stop2ColorField.setValue(stop2.color);
-
-    // Set placeholders from the mapped values
-    stop1ColorField.setPlaceholder(
-      hasVarInInline && needsColorPlaceholder(stop1.color) ? (stop1.placeholderColor ?? '') : '',
-    );
-    stop2ColorField.setPlaceholder(
-      hasVarInInline && needsColorPlaceholder(stop2.color) ? (stop2.placeholderColor ?? '') : '',
-    );
-
-    stop1PosInput.value = String(stop1.position);
-    stop2PosInput.value = String(stop2.position);
 
     if (parsed.type === 'linear') {
       currentType = 'linear';
@@ -2454,8 +2631,6 @@ export function createGradientControl(options: GradientControlOptions): DesignCo
   wireTextInput(angleInput);
   wireTextInput(posXInput);
   wireTextInput(posYInput);
-  wireTextInput(stop1PosInput);
-  wireTextInput(stop2PosInput);
 
   // -------------------------------------------------------------------------
   // Stop Add/Delete Interactions (Phase 6)

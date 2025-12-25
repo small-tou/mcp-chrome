@@ -79,6 +79,7 @@ export const FILE_TYPES = {
 export const NETWORK_FILTERS = {
   // Substring match against full URL (not just hostname) to support patterns like 'facebook.com/tr'
   EXCLUDED_DOMAINS: [
+    // Google
     'google-analytics.com',
     'googletagmanager.com',
     'analytics.google.com',
@@ -88,20 +89,37 @@ export const NETWORK_FILTERS = {
     'stats.g.doubleclick.net',
     'adservice.google.com',
     'pagead2.googlesyndication.com',
+    // Amazon
     'amazon-adsystem.com',
+    // Microsoft
     'bat.bing.com',
     'clarity.ms',
+    // Facebook
     'connect.facebook.net',
     'facebook.com/tr',
+    // Twitter
     'analytics.twitter.com',
-    'static.hotjar.com',
-    'script.hotjar.com',
+    'ads-twitter.com',
+    // Other ad networks
+    'ads.yahoo.com',
+    'adroll.com',
+    'adnxs.com',
+    'criteo.com',
+    'quantserve.com',
+    'scorecardresearch.com',
+    // Analytics & session recording
     'segment.io',
     'amplitude.com',
     'mixpanel.com',
     'optimizely.com',
-    'scorecardresearch.com',
-    'quantserve.com',
+    'static.hotjar.com',
+    'script.hotjar.com',
+    'crazyegg.com',
+    'clicktale.net',
+    'mouseflow.com',
+    'fullstory.com',
+    // LinkedIn (tracking pixels)
+    'linkedin.com/px',
   ],
   // Static resource extensions (used when includeStatic=false)
   STATIC_RESOURCE_EXTENSIONS: [

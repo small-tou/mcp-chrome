@@ -20,6 +20,7 @@ import type {
   ActionPolicy,
   ExecutableAction,
   ExecutableActionType,
+  ExecutionFlags,
   VariableStore,
 } from './types';
 
@@ -87,6 +88,8 @@ export function execCtxToActionCtx(
     stepId?: string;
     runId?: string;
     pushLog?: (entry: unknown) => void;
+    /** Execution flags to pass to action handlers */
+    execution?: ExecutionFlags;
   },
 ): ActionExecutionContext {
   // Use provided stepId for proper log attribution, fallback to 'action' only if not provided
@@ -104,6 +107,7 @@ export function execCtxToActionCtx(
       });
     },
     pushLog: options?.pushLog,
+    execution: options?.execution,
   };
 }
 
@@ -377,6 +381,31 @@ export type StepExecutionAttempt =
   | { supported: false; reason: string };
 
 /**
+ * Options for step executor
+ */
+export interface StepExecutorOptions {
+  runId?: string;
+  pushLog?: (entry: unknown) => void;
+  /**
+   * If true, throws on unsupported step types instead of returning { supported: false }
+   * Use this in strict mode where all steps must go through ActionRegistry
+   */
+  strict?: boolean;
+  /**
+   * Skip ActionRegistry retry policy.
+   * When true, the action's retry policy is removed before execution.
+   * Use this when StepRunner already handles retry via withRetry().
+   */
+  skipRetry?: boolean;
+  /**
+   * Skip navigation waiting inside action handlers.
+   * When true, handlers like click/navigate skip their internal nav-wait logic.
+   * Use this when StepRunner already handles navigation waiting.
+   */
+  skipNavWait?: boolean;
+}
+
+/**
  * Create a step executor that uses ActionRegistry
  *
  * This is the main integration point - it creates a function that can
@@ -391,18 +420,10 @@ export function createStepExecutor(registry: ActionRegistry) {
     ctx: ExecCtx,
     step: Step,
     tabId: number,
-    options?: {
-      runId?: string;
-      pushLog?: (entry: unknown) => void;
-      /**
-       * If true, throws on unsupported step types instead of returning { supported: false }
-       * Use this in strict mode where all steps must go through ActionRegistry
-       */
-      strict?: boolean;
-    },
+    options?: StepExecutorOptions,
   ): Promise<StepExecutionAttempt> {
     // Convert step to action
-    const action = stepToAction(step);
+    let action = stepToAction(step);
 
     if (!action) {
       const reason = `Unsupported step type for ActionRegistry: ${step.type}`;
@@ -410,6 +431,12 @@ export function createStepExecutor(registry: ActionRegistry) {
         throw new Error(reason);
       }
       return { supported: false, reason };
+    }
+
+    // Skip retry policy if StepRunner handles it
+    // This avoids double retry: StepRunner.withRetry() + ActionRegistry.retry
+    if (options?.skipRetry === true && action.policy?.retry) {
+      action = { ...action, policy: { ...action.policy, retry: undefined } };
     }
 
     // Check if handler exists
@@ -422,11 +449,16 @@ export function createStepExecutor(registry: ActionRegistry) {
       return { supported: false, reason };
     }
 
+    // Build execution flags for handlers
+    const execution: ExecutionFlags | undefined =
+      options?.skipNavWait === true ? { skipNavWait: true } : undefined;
+
     // Convert context with proper stepId for log attribution
     const actionCtx = execCtxToActionCtx(ctx, tabId, {
       stepId: step.id,
       runId: options?.runId,
       pushLog: options?.pushLog,
+      execution,
     });
 
     // Execute via registry (includes retry, timeout, hooks)

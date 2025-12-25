@@ -751,6 +751,18 @@ export type ActionOutput<T extends ActionType> = T extends keyof ActionOutputsBy
 
 export type ValidationResult = { ok: true } | { ok: false; errors: NonEmptyArray<string> };
 
+/**
+ * Execution flags for coordinating with orchestrator policies.
+ * Used to avoid duplicate retry/nav-wait when StepRunner owns these policies.
+ */
+export interface ExecutionFlags {
+  /**
+   * When true, navigation waiting should be handled by StepRunner.
+   * Action handlers (click, navigate) should skip their internal nav-wait logic.
+   */
+  skipNavWait?: boolean;
+}
+
 export interface ActionExecutionContext {
   vars: VariableStore;
   tabId: number;
@@ -765,6 +777,11 @@ export interface ActionExecutionContext {
    * Action handlers may emit richer entries (e.g. selector fallback) via this hook.
    */
   pushLog?: (entry: unknown) => void;
+  /**
+   * Execution flags provided by the orchestrator.
+   * Handlers should respect these flags to avoid duplicating StepRunner policies.
+   */
+  execution?: ExecutionFlags;
 }
 
 export type ControlDirective =

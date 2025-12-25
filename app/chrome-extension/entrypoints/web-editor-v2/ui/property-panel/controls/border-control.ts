@@ -19,6 +19,7 @@ import type { DesignTokensService } from '../../../core/design-tokens';
 import { createIconButtonGroup, type IconButtonGroup } from '../components/icon-button-group';
 import { createInputContainer, type InputContainer } from '../components/input-container';
 import { createColorField, type ColorField } from './color-field';
+import { createGradientControl } from './gradient-control';
 import { combineLengthValue, formatLengthForDisplay } from './css-helpers';
 import { wireNumberStepping } from './number-stepping';
 import type { DesignControl } from '../types';
@@ -30,6 +31,10 @@ import type { DesignControl } from '../types';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const BORDER_STYLE_VALUES = ['solid', 'dashed', 'dotted', 'none'] as const;
+
+/** Color type for border: solid uses border-color, gradient uses border-image-source */
+const BORDER_COLOR_TYPE_VALUES = ['solid', 'gradient'] as const;
+type BorderColorType = (typeof BORDER_COLOR_TYPE_VALUES)[number];
 
 const BORDER_EDGE_VALUES = ['all', 'top', 'right', 'bottom', 'left'] as const;
 type BorderEdge = (typeof BORDER_EDGE_VALUES)[number];
@@ -109,14 +114,6 @@ function isFieldFocused(el: HTMLElement): boolean {
   }
 }
 
-function normalizeLength(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return '';
-  if (/^-?(?:\d+|\d*\.\d+)$/.test(trimmed)) return `${trimmed}px`;
-  if (/^-?\d+\.$/.test(trimmed)) return `${trimmed.slice(0, -1)}px`;
-  return trimmed;
-}
-
 function readInlineValue(element: Element, property: string): string {
   try {
     const style = (element as HTMLElement).style;
@@ -132,6 +129,17 @@ function readComputedValue(element: Element, property: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Infer border color type from border-image-source value.
+ * Returns 'gradient' if a gradient is detected, 'solid' otherwise.
+ */
+function inferBorderColorType(borderImageSource: string): BorderColorType {
+  const trimmed = borderImageSource.trim().toLowerCase();
+  if (!trimmed || trimmed === 'none') return 'solid';
+  if (/\b(?:linear|radial|conic)-gradient\s*\(/i.test(trimmed)) return 'gradient';
+  return 'solid';
 }
 
 function createBorderEdgeIcon(edge: BorderEdge): SVGElement {
@@ -244,6 +252,7 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
 
   let currentTarget: Element | null = null;
   let currentBorderEdge: BorderEdge = 'all';
+  let currentColorType: BorderColorType = 'solid';
 
   const root = document.createElement('div');
   root.className = 'we-field-group';
@@ -251,24 +260,6 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
   // ===========================================================================
   // DOM Helpers
   // ===========================================================================
-
-  function createInputRow(
-    labelText: string,
-    ariaLabel: string,
-  ): { row: HTMLDivElement; input: HTMLInputElement } {
-    const row = document.createElement('div');
-    row.className = 'we-field';
-    const label = document.createElement('span');
-    label.className = 'we-field-label';
-    label.textContent = labelText;
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'we-input';
-    input.autocomplete = 'off';
-    input.setAttribute('aria-label', ariaLabel);
-    row.append(label, input);
-    return { row, input };
-  }
 
   function createSelectRow(
     labelText: string,
@@ -323,14 +314,40 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
   borderEdgeMount.style.flex = '1';
   borderEdgeRow.append(borderEdgeLabel, borderEdgeMount);
 
-  const { row: borderWidthRow, input: borderWidthInput } = createInputRow('Width', 'Border Width');
+  // Border Width with InputContainer
+  const borderWidthRow = document.createElement('div');
+  borderWidthRow.className = 'we-field';
+  const borderWidthLabel = document.createElement('span');
+  borderWidthLabel.className = 'we-field-label';
+  borderWidthLabel.textContent = 'Width';
+  const borderWidthContainer = createInputContainer({
+    ariaLabel: 'Border Width',
+    inputMode: 'decimal',
+    prefix: null,
+    suffix: 'px',
+  });
+  borderWidthRow.append(borderWidthLabel, borderWidthContainer.root);
+  const borderWidthInput = borderWidthContainer.input;
+
   const { row: borderStyleRow, select: borderStyleSelect } = createSelectRow(
     'Style',
     'Border Style',
     BORDER_STYLE_VALUES,
   );
+
+  // Color Type selector (solid/gradient)
+  const { row: colorTypeRow, select: colorTypeSelect } = createSelectRow(
+    'Type',
+    'Border Color Type',
+    BORDER_COLOR_TYPE_VALUES,
+  );
+
+  // Solid color row
   const { row: borderColorRow, colorFieldContainer: borderColorContainer } =
     createColorRow('Color');
+
+  // Gradient mount for border-image-source
+  const borderGradientMount = document.createElement('div');
 
   // Border Radius (unified + per-corner editing)
   const borderRadiusRow = document.createElement('div');
@@ -402,7 +419,8 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
     borderRadiusCorners['bottom-right'].root,
   );
 
-  borderRadiusControl.append(borderRadiusUnifiedRow, borderRadiusCornersGrid);
+  // Keep corners grid separate from the unified row for full-width display when expanded
+  borderRadiusControl.append(borderRadiusUnifiedRow);
   borderRadiusRow.append(borderRadiusLabel, borderRadiusControl);
 
   const borderRadiusField: BorderRadiusFieldState = {
@@ -419,13 +437,31 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
     cornersMaterialized: false,
   };
 
+  // Create combined row for Width and Radius
+  const widthAndRadiusRow = document.createElement('div');
+  widthAndRadiusRow.className = 'we-field-row';
+  borderWidthRow.style.flex = '1';
+  borderWidthRow.style.minWidth = '0';
+  borderRadiusRow.style.flex = '1';
+  borderRadiusRow.style.minWidth = '0';
+  widthAndRadiusRow.append(borderWidthRow, borderRadiusRow);
+
   wireNumberStepping(disposer, borderWidthInput, { mode: 'css-length' });
   wireNumberStepping(disposer, borderRadiusUnified.input, { mode: 'css-length' });
   for (const corner of BORDER_RADIUS_CORNERS) {
     wireNumberStepping(disposer, borderRadiusCorners[corner].input, { mode: 'css-length' });
   }
 
-  root.append(borderEdgeRow, borderWidthRow, borderStyleRow, borderColorRow, borderRadiusRow);
+  // borderRadiusCornersGrid placed after widthAndRadiusRow to span full width when expanded
+  root.append(
+    borderEdgeRow,
+    widthAndRadiusRow,
+    borderRadiusCornersGrid,
+    borderStyleRow,
+    colorTypeRow,
+    borderColorRow,
+    borderGradientMount,
+  );
   container.appendChild(root);
   disposer.add(() => root.remove());
 
@@ -478,6 +514,19 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
     },
   });
   disposer.add(() => borderColorField.dispose());
+
+  // ===========================================================================
+  // Gradient Control (for border-image-source)
+  // ===========================================================================
+
+  const borderGradientControl = createGradientControl({
+    container: borderGradientMount,
+    transactionManager,
+    tokensService,
+    property: 'border-image-source',
+    allowNone: true,
+  });
+  disposer.add(() => borderGradientControl.dispose());
 
   // ===========================================================================
   // Field State Map
@@ -608,6 +657,101 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
   }
 
   // ===========================================================================
+  // Color Type (Solid / Gradient)
+  // ===========================================================================
+
+  /**
+   * Update visibility of color-related rows based on currentColorType.
+   */
+  function updateColorTypeVisibility(): void {
+    borderColorRow.hidden = currentColorType !== 'solid';
+    borderGradientMount.hidden = currentColorType !== 'gradient';
+  }
+
+  /**
+   * Update edge selector disabled state based on color type.
+   * Gradient mode requires 'all' edges (border-image doesn't support per-edge).
+   */
+  function updateEdgeSelectorState(): void {
+    const hasTarget = Boolean(currentTarget && currentTarget.isConnected);
+
+    // In gradient mode, lock edge to 'all' since border-image applies to all edges
+    if (currentColorType === 'gradient') {
+      if (currentBorderEdge !== 'all') {
+        commitTransaction('border-width');
+        commitTransaction('border-style');
+        commitTransaction('border-color');
+        currentBorderEdge = 'all';
+      }
+      borderEdgeGroup.setValue('all');
+    }
+
+    borderEdgeGroup.setDisabled(!hasTarget || currentColorType === 'gradient');
+  }
+
+  /**
+   * Set border color type and apply necessary CSS changes.
+   * Uses multiStyle transaction to atomically set border-image properties.
+   */
+  function setColorType(type: BorderColorType): void {
+    const target = currentTarget;
+
+    currentColorType = type;
+    colorTypeSelect.value = type;
+
+    updateColorTypeVisibility();
+    updateEdgeSelectorState();
+
+    if (!target || !target.isConnected) return;
+
+    // Use multiStyle to atomically manage border-image properties
+    const handle = transactionManager.beginMultiStyle(target, [
+      'border-image-source',
+      'border-image-slice',
+    ]);
+    if (!handle) return;
+
+    if (type === 'solid') {
+      // Clear border-image when switching to solid color
+      handle.set({
+        'border-image-source': 'none',
+        'border-image-slice': '',
+      });
+    } else {
+      // Set up border-image for gradient mode
+      const inlineSource = readInlineValue(target, 'border-image-source');
+      const computedSource = readComputedValue(target, 'border-image-source');
+      const currentSource = inlineSource || computedSource;
+
+      // Use existing gradient or provide a default
+      const hasValidGradient =
+        currentSource &&
+        currentSource.trim() &&
+        currentSource.trim().toLowerCase() !== 'none' &&
+        /\b(?:linear|radial|conic)-gradient\s*\(/i.test(currentSource);
+
+      const gradientValue = hasValidGradient
+        ? currentSource
+        : 'linear-gradient(90deg, #000000, #ffffff)';
+
+      handle.set({
+        'border-image-source': gradientValue,
+        'border-image-slice': '1',
+      });
+    }
+
+    handle.commit({ merge: true });
+  }
+
+  // Wire color type selector change event
+  disposer.listen(colorTypeSelect, 'change', () => {
+    const type = colorTypeSelect.value as BorderColorType;
+    setColorType(type);
+    borderGradientControl.refresh();
+    syncAllFields();
+  });
+
+  // ===========================================================================
   // Field Synchronization
   // ===========================================================================
 
@@ -682,6 +826,7 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
         input.disabled = true;
         input.value = '';
         input.placeholder = '';
+        if (property === 'border-width') borderWidthContainer.setSuffix('px');
         return;
       }
 
@@ -692,7 +837,15 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
 
       const inlineValue = readInlineValue(target, cssProperty);
       const computedValue = readComputedValue(target, cssProperty);
-      input.value = inlineValue || computedValue;
+
+      // Use formatLengthForDisplay for border-width to set proper suffix
+      if (property === 'border-width') {
+        const formatted = formatLengthForDisplay(inlineValue || computedValue);
+        input.value = formatted.value;
+        borderWidthContainer.setSuffix(formatted.suffix);
+      } else {
+        input.value = inlineValue || computedValue;
+      }
       input.placeholder = '';
     } else if (field.kind === 'select') {
       const select = field.element;
@@ -742,7 +895,9 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
   function syncAllFields(): void {
     for (const p of PROPS) syncField(p);
     const hasTarget = Boolean(currentTarget && currentTarget.isConnected);
-    borderEdgeGroup.setDisabled(!hasTarget);
+    colorTypeSelect.disabled = !hasTarget;
+    updateColorTypeVisibility();
+    updateEdgeSelectorState();
   }
 
   // ===========================================================================
@@ -754,11 +909,16 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
     if (field.kind !== 'text') return;
 
     const input = field.element;
-    const normalize = property === 'border-width' ? normalizeLength : (v: string) => v.trim();
+
+    // Use combineLengthValue for border-width to include suffix
+    const getNextValue =
+      property === 'border-width'
+        ? () => combineLengthValue(input.value, borderWidthContainer.getSuffixText())
+        : () => input.value.trim();
 
     disposer.listen(input, 'input', () => {
       const handle = beginTransaction(property);
-      if (handle) handle.set(normalize(input.value));
+      if (handle) handle.set(getNextValue());
     });
 
     disposer.listen(input, 'blur', () => {
@@ -932,11 +1092,50 @@ export function createBorderControl(options: BorderControlOptions): DesignContro
     if (disposer.isDisposed) return;
     if (element !== currentTarget) commitAllTransactions();
     currentTarget = element;
+
+    // Infer color type from border-image-source
+    if (element && element.isConnected) {
+      const borderImageSource =
+        readInlineValue(element, 'border-image-source') ||
+        readComputedValue(element, 'border-image-source');
+      currentColorType = inferBorderColorType(borderImageSource);
+    } else {
+      currentColorType = 'solid';
+    }
+    colorTypeSelect.value = currentColorType;
+
+    // In gradient mode, ensure edge is set to 'all'
+    if (currentColorType === 'gradient') {
+      currentBorderEdge = 'all';
+      borderEdgeGroup.setValue('all');
+    }
+
+    // Update gradient control target
+    borderGradientControl.setTarget(element);
     syncAllFields();
   }
 
   function refresh(): void {
     if (disposer.isDisposed) return;
+
+    // Re-infer color type from element to handle external changes (CSS panel, Undo/Redo)
+    const target = currentTarget;
+    if (target && target.isConnected) {
+      const borderImageSource =
+        readInlineValue(target, 'border-image-source') ||
+        readComputedValue(target, 'border-image-source');
+      const inferredType = inferBorderColorType(borderImageSource);
+      if (inferredType !== currentColorType) {
+        currentColorType = inferredType;
+        colorTypeSelect.value = inferredType;
+        if (inferredType === 'gradient') {
+          currentBorderEdge = 'all';
+          borderEdgeGroup.setValue('all');
+        }
+      }
+    }
+
+    borderGradientControl.refresh();
     syncAllFields();
   }
 

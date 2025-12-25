@@ -633,17 +633,20 @@ refId?: string;     // 聚焦到特定节点的子树
 
 **完成情况**:
 
-| 子任务            | 状态      | 说明                                                                    |
-| ----------------- | --------- | ----------------------------------------------------------------------- |
-| webRequest 版抓包 | ✅ 已完成 | Schema 已增强，添加 maxCaptureTime/inactivityTimeout/includeStatic 参数 |
-| Debugger 版抓包   | ✅ 已完成 | Schema 已增强，添加 maxCaptureTime/inactivityTimeout/includeStatic 参数 |
-| 统一过滤配置      | ✅ 已完成 | 过滤配置已统一到 `constants.ts` 的 `NETWORK_FILTERS`                    |
-| Schema 描述增强   | ✅ 已完成 | 明确说明两个工具的区别和使用场景                                        |
+| 子任务            | 状态      | 说明                                                                         |
+| ----------------- | --------- | ---------------------------------------------------------------------------- |
+| webRequest 版抓包 | ✅ 已完成 | Schema 已增强，添加 maxCaptureTime/inactivityTimeout/includeStatic 参数      |
+| Debugger 版抓包   | ✅ 已完成 | Schema 已增强，添加 maxCaptureTime/inactivityTimeout/includeStatic 参数      |
+| 统一过滤配置      | ✅ 已完成 | 过滤配置已统一到 `constants.ts` 的 `NETWORK_FILTERS`                         |
+| Schema 描述增强   | ✅ 已完成 | 明确说明两个工具的区别和使用场景                                             |
+| **统一接口**      | ✅ 已完成 | 创建 `chrome_network_capture` 统一工具，通过 `needResponseBody` 参数选择后端 |
 
-**决策调整**: 保留两套工具（webRequest 和 Debugger），通过增强描述引导用户选择：
+**最终实现**: 创建了统一的 `chrome_network_capture` 工具：
 
-- `chrome_network_capture_start/stop`: 轻量级，不占用 debugger，无 responseBody
-- `chrome_network_debugger_start/stop`: 支持 responseBody，但会占用 debugger
+- **接口**: `action: 'start' | 'stop'` + `needResponseBody?: boolean`
+- `needResponseBody=false`（默认）: 使用 webRequest API（轻量，不占用 debugger）
+- `needResponseBody=true`: 使用 Debugger API（可以获取 response body）
+- 原来的 4 个工具（`chrome_network_capture_start/stop`、`chrome_network_debugger_start/stop`）从 TOOL_SCHEMAS 移除，仅供内部使用
 
 **涉及文件**:
 
@@ -824,7 +827,7 @@ refId?: string;     // 聚焦到特定节点的子树
 | 输出脱敏 | cookie/token/JWT/Base64/Hex   | 同等覆盖                         | ✅ 一致       |
 | 输出限长 | 50KB 固定                     | 50KB 默认，可配 `maxOutputBytes` | ✅ 项目更灵活 |
 | 超时     | 10s 固定                      | 15s 默认，可配 `timeoutMs`       | ⚠️ 默认值不同 |
-| 返回结构 | 含 `tabContext.availableTabs` | 无 tab 列表                      | ❌ 缺失       |
+| 返回结构 | 含 `tabContext.availableTabs` | 无 tab 列表                      | 不需要        |
 | 参数契约 | `action/text`                 | `code`                           | ⚠️ 接口不兼容 |
 
 ### 2. `chrome_gif_recorder` 差异
@@ -865,26 +868,28 @@ refId?: string;     // 聚焦到特定节点的子树
 
 ### 5. Network Capture 差异
 
-| 维度     | mcp-tools.js | 项目实现                                 | 影响            |
-| -------- | ------------ | ---------------------------------------- | --------------- |
-| 统一开关 | 无           | 未实现 `needResponseBody` 统一开关       | ⚠️ 保持两套工具 |
-| 过滤配置 | 统一         | Debugger 版未复用 `NETWORK_FILTERS` 常量 | ⚠️ 代码不一致   |
+| 维度     | mcp-tools.js | 项目实现                                               | 影响            |
+| -------- | ------------ | ------------------------------------------------------ | --------------- |
+| 统一开关 | 无           | 未实现 `needResponseBody` 统一开关                     | ⚠️ 保持两套工具 |
+| 过滤配置 | 统一         | ~~Debugger 版未复用 `NETWORK_FILTERS` 常量~~ ✅ 已修复 | ✅ 代码一致     |
 
 ---
 
 ## 九、后续优化建议
 
-### 高优先级
+### 已完成 ✅
 
-1. **GIF stop 补末帧**：与 mcp-tools 行为一致，确保录制完整性
-2. **Network 过滤配置统一**：Debugger 版复用 `NETWORK_FILTERS` 常量
+1. **Network 过滤配置统一**：Debugger 版已复用 `NETWORK_FILTERS` 常量，修复了 `facebook.com/tr` 匹配 bug
+2. **GIF stop 补末帧**：与 mcp-tools 行为一致，确保录制完整性
+3. **Computer hover scrollIntoView**：ref/selector 路径现在会先滚动元素到视口中心再 hover
+4. **Console 透出 dropped 计数**：buffer 模式返回 `droppedMessageCount/droppedExceptionCount`
 
-### 中优先级
+### 中优先级（待定）
 
-3. **Console buffer 容量扩大**：考虑从 2000 提升到 5000
-4. **GIF 增加 quality 参数**：控制输出质量和文件大小
+5. **Console buffer 容量扩大**：考虑从 2000 提升到 5000（需根据实际溢出情况决定）
+6. **GIF 增加 quality 参数**：控制输出质量和文件大小
 
 ### 低优先级（接口兼容性）
 
-5. **tabContext 返回**：javascript/console 等工具增加 availableTabs 返回
-6. **zoom/modifiers 接口**：当前对象形式更 TS 友好，暂不调整
+7. **tabContext 返回**：javascript/console 等工具增加 availableTabs 返回
+8. **zoom/modifiers 接口**：当前对象形式更 TS 友好，暂不调整

@@ -361,6 +361,13 @@ class ComputerTool extends BaseBrowserToolExecutor {
         try {
           if (params.ref) {
             await this.injectContentScript(tab.id, ['inject-scripts/accessibility-tree-helper.js']);
+            // Scroll element into view first to ensure it's visible
+            try {
+              await this.sendMessageToTab(tab.id, { action: 'focusByRef', ref: params.ref });
+            } catch {
+              // Best effort - continue even if scroll fails
+            }
+            // Re-resolve coordinates after scroll
             const resolved = await this.sendMessageToTab(tab.id, {
               action: TOOL_MESSAGE_TYPES.RESOLVE_REF,
               ref: params.ref,
@@ -378,7 +385,27 @@ class ComputerTool extends BaseBrowserToolExecutor {
               isXPath: selectorType === 'xpath',
             });
             if (ensured && ensured.success) {
-              coord = project({ x: ensured.center.x, y: ensured.center.y });
+              // Scroll element into view first to ensure it's visible
+              const resolvedRef = typeof ensured.ref === 'string' ? ensured.ref : undefined;
+              if (resolvedRef) {
+                try {
+                  await this.sendMessageToTab(tab.id, { action: 'focusByRef', ref: resolvedRef });
+                } catch {
+                  // Best effort - continue even if scroll fails
+                }
+                // Re-resolve coordinates after scroll
+                const reResolved = await this.sendMessageToTab(tab.id, {
+                  action: TOOL_MESSAGE_TYPES.RESOLVE_REF,
+                  ref: resolvedRef,
+                });
+                if (reResolved && reResolved.success) {
+                  coord = project({ x: reResolved.center.x, y: reResolved.center.y });
+                } else {
+                  coord = project({ x: ensured.center.x, y: ensured.center.y });
+                }
+              } else {
+                coord = project({ x: ensured.center.x, y: ensured.center.y });
+              }
               resolvedBy = 'selector';
             }
           } else if (params.coordinates) {

@@ -68,9 +68,20 @@ export interface StepExecutorInterface {
 
 /**
  * Legacy step executor using nodes/executeStep
+ *
+ * This executor delegates to the existing node execution system.
+ * The options parameter is accepted but not used - retry/timeout/navigation
+ * waiting are handled by StepRunner to maintain existing behavior.
  */
 export class LegacyStepExecutor implements StepExecutorInterface {
-  async execute(ctx: ExecCtx, step: Step): Promise<StepExecutionResult> {
+  async execute(
+    ctx: ExecCtx,
+    step: Step,
+    _options: StepExecutionOptions,
+  ): Promise<StepExecutionResult> {
+    // Note: tabId from options is not used here because legacy executeStep
+    // queries the active tab internally. In hybrid/actions mode, tabId is
+    // passed through to ActionRegistry handlers.
     const result = await legacyExecuteStep(ctx, step);
     return {
       result: result || {},
@@ -78,7 +89,7 @@ export class LegacyStepExecutor implements StepExecutorInterface {
     };
   }
 
-  supports(): boolean {
+  supports(_stepType: string): boolean {
     // Legacy executor supports all step types via its own registry
     return true;
   }
@@ -89,11 +100,18 @@ export class LegacyStepExecutor implements StepExecutorInterface {
  *
  * In strict mode, any unsupported step type throws an error.
  * This executor does NOT fall back to legacy - use HybridStepExecutor for fallback behavior.
+ *
+ * Respects ExecutionModeConfig for:
+ * - skipActionsRetry: Disables ActionRegistry retry (StepRunner owns retry)
+ * - skipActionsNavWait: Disables handler nav-wait (StepRunner owns nav-wait)
  */
 export class ActionsStepExecutor implements StepExecutorInterface {
   private executor: ReturnType<typeof createStepExecutor>;
 
-  constructor(private registry: ActionRegistry) {
+  constructor(
+    private registry: ActionRegistry,
+    private config: ExecutionModeConfig,
+  ) {
     this.executor = createStepExecutor(registry);
   }
 
@@ -108,6 +126,9 @@ export class ActionsStepExecutor implements StepExecutorInterface {
       runId: options.runId,
       pushLog: options.pushLog,
       strict: true,
+      // Pass policy skip flags from config (default to true = skip)
+      skipRetry: this.config.skipActionsRetry !== false,
+      skipNavWait: this.config.skipActionsNavWait !== false,
     })) as StepExecutionAttempt;
 
     // With strict=true, we should never get { supported: false } - it would throw instead
@@ -130,6 +151,12 @@ export class ActionsStepExecutor implements StepExecutorInterface {
 
 /**
  * Hybrid step executor that tries actions first, falls back to legacy
+ *
+ * Respects ExecutionModeConfig for:
+ * - actionsAllowlist/legacyOnlyTypes: Controls which steps use actions vs legacy
+ * - skipActionsRetry: Disables ActionRegistry retry (StepRunner owns retry)
+ * - skipActionsNavWait: Disables handler nav-wait (StepRunner owns nav-wait)
+ * - logFallbacks: Whether to log when falling back to legacy
  */
 export class HybridStepExecutor implements StepExecutorInterface {
   private actionsExecutor: ReturnType<typeof createStepExecutor>;
@@ -161,6 +188,9 @@ export class HybridStepExecutor implements StepExecutorInterface {
       runId: options.runId,
       pushLog: options.pushLog,
       strict: false, // Don't throw on unsupported, return { supported: false }
+      // Pass policy skip flags from config (default to true = skip)
+      skipRetry: this.config.skipActionsRetry !== false,
+      skipNavWait: this.config.skipActionsNavWait !== false,
     })) as StepExecutionAttempt;
 
     if (attempt.supported) {
@@ -209,7 +239,7 @@ export function createExecutor(
       if (!registry) {
         throw new Error('ActionRegistry required for actions execution mode');
       }
-      return new ActionsStepExecutor(registry);
+      return new ActionsStepExecutor(registry, config);
 
     case 'hybrid':
       if (!registry) {
@@ -217,8 +247,8 @@ export function createExecutor(
       }
       return new HybridStepExecutor(registry, config);
 
-    default: // TypeScript exhaustiveness check
-    {
+    default: {
+      // TypeScript exhaustiveness check
       const _exhaustive: never = config.mode;
       throw new Error(`Unknown execution mode: ${_exhaustive}`);
     }

@@ -30,7 +30,8 @@
       "Bash(pnpm compile:*)",
       "Bash(pnpm run compile)",
       "Bash(pnpm eslint:*)",
-      "Bash(pnpm add:*)"
+      "Bash(pnpm add:*)",
+      "Bash(pnpm test:*)"
     ],
     "deny": [],
     "ask": []

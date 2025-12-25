@@ -134,6 +134,9 @@ export interface ControlGroup {
   /** The body container where controls are mounted */
   body: HTMLElement;
 
+  /** Optional: Container for header action buttons (e.g., add button) */
+  headerActions?: HTMLElement;
+
   /** Set collapsed state */
   setCollapsed(collapsed: boolean): void;
 
