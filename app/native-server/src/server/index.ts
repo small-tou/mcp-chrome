@@ -18,6 +18,10 @@ import {
   ERROR_MESSAGES,
 } from '../constant';
 import { NativeMessagingHost } from '../native-messaging-host';
+import { WebSocketServerManager } from '../websocket/websocket-server';
+import { InstanceManager } from '../websocket/instance-manager';
+import { MessageRouter } from '../websocket/message-router';
+import { WEBSOCKET_SERVER_PORT, WEBSOCKET_SERVER_PATH } from '../constant';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'node:crypto';
@@ -50,6 +54,8 @@ export class Server {
     new Map();
   private agentStreamManager: AgentStreamManager;
   private agentChatService: AgentChatService;
+  private websocketServer: WebSocketServerManager | null = null;
+  private instanceManager: InstanceManager | null = null;
 
   constructor() {
     this.fastify = Fastify({ logger: SERVER_CONFIG.LOGGER_ENABLED });
@@ -334,11 +340,39 @@ export class Server {
       process.env.CHROME_MCP_PORT = String(port);
       process.env.MCP_HTTP_PORT = String(port);
 
+      // 初始化WebSocket服务器
+      this.initWebSocketServer();
+
       this.isRunning = true;
     } catch (err) {
       this.isRunning = false;
       throw err;
     }
+  }
+
+  /**
+   * 初始化WebSocket服务器
+   */
+  private initWebSocketServer(): void {
+    if (this.websocketServer) {
+      return; // 已经初始化
+    }
+
+    // 创建实例管理器和消息路由器
+    this.instanceManager = new InstanceManager();
+    const messageRouter = new MessageRouter(this.instanceManager);
+
+    // 创建WebSocket服务器管理器
+    this.websocketServer = new WebSocketServerManager(this.instanceManager, messageRouter);
+
+    // 启动WebSocket服务器（使用Fastify的HTTP服务器）
+    const httpServer = this.fastify.server;
+    this.websocketServer.start(httpServer, WEBSOCKET_SERVER_PATH);
+
+    // 启动定期清理任务
+    this.instanceManager.startCleanupTask();
+
+    console.log(`[Server] WebSocket服务器已启动，路径: ${WEBSOCKET_SERVER_PATH}`);
   }
 
   public async stop(): Promise<void> {
@@ -347,6 +381,13 @@ export class Server {
     }
 
     try {
+      // 停止WebSocket服务器
+      if (this.websocketServer) {
+        this.websocketServer.stop();
+        this.websocketServer = null;
+        this.instanceManager = null;
+      }
+
       await this.fastify.close();
       closeDb();
       this.isRunning = false;
@@ -355,6 +396,20 @@ export class Server {
       closeDb();
       throw err;
     }
+  }
+
+  /**
+   * 获取实例管理器（用于工具调用）
+   */
+  public getInstanceManager(): InstanceManager | null {
+    return this.instanceManager;
+  }
+
+  /**
+   * 获取WebSocket服务器管理器
+   */
+  public getWebSocketServer(): WebSocketServerManager | null {
+    return this.websocketServer;
   }
 
   public getInstance(): FastifyInstance {

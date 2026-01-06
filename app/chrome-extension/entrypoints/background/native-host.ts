@@ -1,31 +1,39 @@
+/**
+ * Bridge连接管理器（原Native Host，现使用WebSocket）
+ * 使用WebSocket客户端替代Native Messaging
+ */
 import { NativeMessageType } from 'chrome-mcp-shared';
+import {
+  WebSocketMessage,
+  WebSocketMessageType,
+  CallToolRequest,
+  CallToolResponse,
+  ProcessDataRequest,
+  ProcessDataResponse,
+} from 'chrome-mcp-shared';
 import { BACKGROUND_MESSAGE_TYPES } from '@/common/message-types';
-import { NATIVE_HOST, STORAGE_KEYS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '@/common/constants';
+import { STORAGE_KEYS, ERROR_MESSAGES, SUCCESS_MESSAGES, WEBSOCKET_CONFIG } from '@/common/constants';
 import { handleCallTool } from './tools';
 import { listPublished, getFlow } from './record-replay/flow-store';
 import { acquireKeepalive } from './keepalive-manager';
+import {
+  connect as connectWebSocket,
+  disconnect as disconnectWebSocket,
+  isConnected as isWebSocketConnected,
+  sendRequest as sendWebSocketRequest,
+  sendMessage as sendWebSocketMessage,
+  addMessageListener,
+} from './websocket-client';
+import { getCurrentInstanceId, registerInstance } from './instance-manager';
 
-const LOG_PREFIX = '[NativeHost]';
+const LOG_PREFIX = '[BridgeHost]';
 
-let nativePort: chrome.runtime.Port | null = null;
-export const HOST_NAME = NATIVE_HOST.NAME;
-
-// ==================== Reconnect Configuration ====================
-
-const RECONNECT_BASE_DELAY_MS = 500;
-const RECONNECT_MAX_DELAY_MS = 60_000;
-const RECONNECT_MAX_FAST_ATTEMPTS = 8;
-const RECONNECT_COOLDOWN_DELAY_MS = 5 * 60_000;
-
-// ==================== Auto-connect State ====================
+// ==================== 状态管理 ====================
 
 let keepaliveRelease: (() => void) | null = null;
 let autoConnectEnabled = true;
 let autoConnectLoaded = false;
 let ensurePromise: Promise<boolean> | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let reconnectAttempts = 0;
-let manualDisconnect = false;
 
 /**
  * Server status management interface
@@ -40,6 +48,39 @@ let currentServerStatus: ServerStatus = {
   isRunning: false,
   lastUpdated: Date.now(),
 };
+
+// ==================== 消息监听器 ====================
+
+type MessageListener = (message: any) => void | Promise<void>;
+const messageListeners: Map<string, MessageListener[]> = new Map();
+
+/**
+ * 注册消息监听器
+ */
+function addMessageListener(type: string, listener: MessageListener): void {
+  if (!messageListeners.has(type)) {
+    messageListeners.set(type, []);
+  }
+  messageListeners.get(type)!.push(listener);
+}
+
+/**
+ * 触发消息监听器
+ */
+async function triggerMessageListeners(type: string, message: any): Promise<void> {
+  const listeners = messageListeners.get(type);
+  if (listeners) {
+    for (const listener of listeners) {
+      try {
+        await listener(message);
+      } catch (error) {
+        console.error(`${LOG_PREFIX} 消息监听器执行失败`, error);
+      }
+    }
+  }
+}
+
+// ==================== 服务器状态管理 ====================
 
 /**
  * Save server status to chrome.storage
@@ -84,69 +125,15 @@ function broadcastServerStatusChange(status: ServerStatus): void {
     });
 }
 
-// ==================== Port Normalization ====================
-
-/**
- * Normalize a port value to a valid port number or null.
- */
-function normalizePort(value: unknown): number | null {
-  const n =
-    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
-  if (!Number.isFinite(n)) return null;
-  const port = Math.floor(n);
-  if (port <= 0 || port > 65535) return null;
-  return port;
-}
-
-// ==================== Reconnect Utilities ====================
-
-/**
- * Add jitter to a delay value to avoid thundering herd.
- */
-function withJitter(ms: number): number {
-  const ratio = 0.7 + Math.random() * 0.6;
-  return Math.max(0, Math.round(ms * ratio));
-}
-
-/**
- * Calculate reconnect delay based on attempt number.
- * Uses exponential backoff with jitter, then switches to cooldown interval.
- */
-function getReconnectDelayMs(attempt: number): number {
-  if (attempt >= RECONNECT_MAX_FAST_ATTEMPTS) {
-    return withJitter(RECONNECT_COOLDOWN_DELAY_MS);
-  }
-  const delay = Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt), RECONNECT_MAX_DELAY_MS);
-  return withJitter(delay);
-}
-
-/**
- * Clear the reconnect timer if active.
- */
-function clearReconnectTimer(): void {
-  if (!reconnectTimer) return;
-  clearTimeout(reconnectTimer);
-  reconnectTimer = null;
-}
-
-/**
- * Reset reconnect state after successful connection.
- */
-function resetReconnectState(): void {
-  reconnectAttempts = 0;
-  clearReconnectTimer();
-}
-
 // ==================== Keepalive Management ====================
 
 /**
  * Sync keepalive hold based on autoConnectEnabled state.
- * When auto-connect is enabled, we hold a keepalive reference to keep SW alive.
  */
 function syncKeepaliveHold(): void {
   if (autoConnectEnabled) {
     if (!keepaliveRelease) {
-      keepaliveRelease = acquireKeepalive('native-host');
+      keepaliveRelease = acquireKeepalive('bridge-host');
       console.debug(`${LOG_PREFIX} Acquired keepalive`);
     }
     return;
@@ -165,93 +152,251 @@ function syncKeepaliveHold(): void {
 // ==================== Auto-connect Settings ====================
 
 /**
- * Load the nativeAutoConnectEnabled setting from storage.
+ * Load the autoConnectEnabled setting from storage.
  */
-async function loadNativeAutoConnectEnabled(): Promise<boolean> {
+async function loadAutoConnectEnabled(): Promise<boolean> {
   try {
-    const result = await chrome.storage.local.get([STORAGE_KEYS.NATIVE_AUTO_CONNECT_ENABLED]);
-    const raw = result[STORAGE_KEYS.NATIVE_AUTO_CONNECT_ENABLED];
+    const result = await chrome.storage.local.get([STORAGE_KEYS.WEBSOCKET_AUTO_CONNECT_ENABLED]);
+    const raw = result[STORAGE_KEYS.WEBSOCKET_AUTO_CONNECT_ENABLED];
     if (typeof raw === 'boolean') return raw;
   } catch (error) {
-    console.warn(`${LOG_PREFIX} Failed to load nativeAutoConnectEnabled`, error);
+    console.warn(`${LOG_PREFIX} Failed to load autoConnectEnabled`, error);
   }
   return true; // Default to enabled
 }
 
 /**
- * Set the nativeAutoConnectEnabled setting and persist to storage.
+ * Set the autoConnectEnabled setting and persist to storage.
  */
-async function setNativeAutoConnectEnabled(enabled: boolean): Promise<void> {
+async function setAutoConnectEnabled(enabled: boolean): Promise<void> {
   autoConnectEnabled = enabled;
   autoConnectLoaded = true;
   try {
-    await chrome.storage.local.set({ [STORAGE_KEYS.NATIVE_AUTO_CONNECT_ENABLED]: enabled });
-    console.debug(`${LOG_PREFIX} Set nativeAutoConnectEnabled=${enabled}`);
+    await chrome.storage.local.set({ [STORAGE_KEYS.WEBSOCKET_AUTO_CONNECT_ENABLED]: enabled });
+    console.debug(`${LOG_PREFIX} Set autoConnectEnabled=${enabled}`);
   } catch (error) {
-    console.warn(`${LOG_PREFIX} Failed to persist nativeAutoConnectEnabled`, error);
+    console.warn(`${LOG_PREFIX} Failed to persist autoConnectEnabled`, error);
   }
   syncKeepaliveHold();
 }
 
-// ==================== Port Preference ====================
+// ==================== 消息处理 ====================
 
 /**
- * Get the preferred port for connecting to native server.
- * Priority: explicit override > user preference > last known port > default
+ * 处理来自WebSocket服务器的消息
  */
-async function getPreferredPort(override?: unknown): Promise<number> {
-  const explicit = normalizePort(override);
-  if (explicit) return explicit;
+function setupWebSocketMessageHandlers(): void {
+  // 这些处理器会在websocket-client中调用
+  // 我们需要在这里注册处理器
+}
+
+/**
+ * 处理工具调用请求（从服务器接收）
+ */
+async function handleIncomingCallTool(message: WebSocketMessage): Promise<void> {
+  const request = message.payload as CallToolRequest;
+  const instanceId = message.instanceId || getCurrentInstanceId();
 
   try {
-    const result = await chrome.storage.local.get([
-      STORAGE_KEYS.NATIVE_SERVER_PORT,
-      STORAGE_KEYS.SERVER_STATUS,
-    ]);
+    const result = await handleCallTool(request);
+    const response: CallToolResponse = {
+      status: 'success',
+      data: result,
+    };
 
-    const userPort = normalizePort(result[STORAGE_KEYS.NATIVE_SERVER_PORT]);
-    if (userPort) return userPort;
-
-    const status = result[STORAGE_KEYS.SERVER_STATUS] as Partial<ServerStatus> | undefined;
-    const statusPort = normalizePort(status?.port);
-    if (statusPort) return statusPort;
+    sendWebSocketMessage({
+      type: WebSocketMessageType.CALL_TOOL_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: response,
+    });
   } catch (error) {
-    console.warn(`${LOG_PREFIX} Failed to read preferred port`, error);
+    const response: CallToolResponse = {
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    };
+    sendWebSocketMessage({
+      type: WebSocketMessageType.CALL_TOOL_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: response,
+    });
   }
-
-  const inMemoryPort = normalizePort(currentServerStatus.port);
-  if (inMemoryPort) return inMemoryPort;
-
-  return NATIVE_HOST.DEFAULT_PORT;
 }
-
-// ==================== Reconnect Scheduling ====================
 
 /**
- * Schedule a reconnect attempt with exponential backoff.
+ * 处理数据请求（从服务器接收）
  */
-function scheduleReconnect(reason: string): void {
-  if (nativePort) return;
-  if (manualDisconnect) return;
-  if (!autoConnectEnabled) return;
-  if (reconnectTimer) return;
+async function handleIncomingProcessData(message: WebSocketMessage): Promise<void> {
+  const request = message.payload as ProcessDataRequest;
+  const instanceId = message.instanceId || getCurrentInstanceId();
 
-  const delay = getReconnectDelayMs(reconnectAttempts);
-  console.debug(
-    `${LOG_PREFIX} Reconnect scheduled in ${delay}ms (attempt=${reconnectAttempts}, reason=${reason})`,
-  );
+  try {
+    const response: ProcessDataResponse = {
+      status: 'success',
+      data: request.data,
+    };
 
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    if (nativePort) return;
-    if (manualDisconnect || !autoConnectEnabled) return;
-
-    reconnectAttempts += 1;
-    void ensureNativeConnected(`reconnect:${reason}`).catch(() => {});
-  }, delay);
+    sendWebSocketMessage({
+      type: WebSocketMessageType.PROCESS_DATA_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: response,
+    });
+  } catch (error) {
+    const response: ProcessDataResponse = {
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    };
+    sendWebSocketMessage({
+      type: WebSocketMessageType.PROCESS_DATA_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: response,
+    });
+  }
 }
 
-// ==================== Server Status Update ====================
+/**
+ * 处理列出已发布流程的请求
+ */
+async function handleIncomingListPublishedFlows(message: WebSocketMessage): Promise<void> {
+  const instanceId = message.instanceId || getCurrentInstanceId();
+
+  try {
+    const published = await listPublished();
+    const items = [] as any[];
+    for (const p of published) {
+      const flow = await getFlow(p.id);
+      if (!flow) continue;
+      items.push({
+        id: p.id,
+        slug: p.slug,
+        version: p.version,
+        name: p.name,
+        description: p.description || flow.description || '',
+        variables: flow.variables || [],
+        meta: flow.meta || {},
+      });
+    }
+
+    sendWebSocketMessage({
+      type: WebSocketMessageType.LIST_PUBLISHED_FLOWS_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: { status: 'success', items },
+    });
+  } catch (error: any) {
+    sendWebSocketMessage({
+      type: WebSocketMessageType.LIST_PUBLISHED_FLOWS_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: { status: 'error', error: error?.message || String(error) },
+    });
+  }
+}
+
+// ==================== Core Ensure Function ====================
+
+/**
+ * Ensure WebSocket connection is established.
+ * This is the main entry point for auto-connect logic.
+ *
+ * @param trigger - Description of what triggered this call (for logging)
+ * @returns Whether the connection is now established
+ */
+async function ensureConnected(trigger: string): Promise<boolean> {
+  // Concurrency protection: only one ensure flow at a time
+  if (ensurePromise) return ensurePromise;
+
+  ensurePromise = (async () => {
+    // Load auto-connect setting if not yet loaded
+    if (!autoConnectLoaded) {
+      autoConnectEnabled = await loadAutoConnectEnabled();
+      autoConnectLoaded = true;
+      syncKeepaliveHold();
+    }
+
+    // If auto-connect is disabled, do nothing
+    if (!autoConnectEnabled) {
+      console.debug(`${LOG_PREFIX} Auto-connect disabled, skipping ensure (trigger=${trigger})`);
+      return false;
+    }
+
+    // Sync keepalive hold
+    syncKeepaliveHold();
+
+    // Already connected
+    if (isWebSocketConnected()) {
+      console.debug(`${LOG_PREFIX} Already connected (trigger=${trigger})`);
+      // 确保实例已注册
+      const instanceId = getCurrentInstanceId();
+      if (!instanceId) {
+        try {
+          await registerInstance();
+        } catch (error) {
+          console.warn(`${LOG_PREFIX} 实例注册失败`, error);
+        }
+      }
+      return true;
+    }
+
+    console.debug(`${LOG_PREFIX} Attempting connection (trigger=${trigger})`);
+
+    // Attempt connection
+    const connected = await connectWebSocket();
+    if (!connected) {
+      console.warn(`${LOG_PREFIX} Connection failed (trigger=${trigger})`);
+      return false;
+    }
+
+    // 注册实例
+    try {
+      await registerInstance();
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} 实例注册失败`, error);
+    }
+
+    // 更新服务器状态
+    currentServerStatus = {
+      isRunning: true,
+      lastUpdated: Date.now(),
+    };
+    await saveServerStatus(currentServerStatus);
+    broadcastServerStatusChange(currentServerStatus);
+
+    console.debug(`${LOG_PREFIX} Connection established successfully (trigger=${trigger})`);
+    return true;
+  })().finally(() => {
+    ensurePromise = null;
+  });
+
+  return ensurePromise;
+}
+
+/**
+ * Connect to the bridge server via WebSocket
+ * @returns Whether the connection was initiated successfully
+ */
+export function connectNativeHost(_port?: number): boolean {
+  if (isWebSocketConnected()) {
+    return true;
+  }
+
+  void connectWebSocket()
+    .then((connected) => {
+      if (connected) {
+        void registerInstance().catch((error) => {
+          console.warn(`${LOG_PREFIX} 实例注册失败`, error);
+        });
+      }
+    })
+    .catch((error) => {
+      console.warn(`${LOG_PREFIX} 连接失败`, error);
+    });
+
+  return true;
+}
 
 /**
  * Mark server as stopped and broadcast the change.
@@ -271,201 +416,8 @@ async function markServerStopped(reason: string): Promise<void> {
   console.debug(`${LOG_PREFIX} Server marked stopped (${reason})`);
 }
 
-// ==================== Core Ensure Function ====================
-
 /**
- * Ensure native connection is established.
- * This is the main entry point for auto-connect logic.
- *
- * @param trigger - Description of what triggered this call (for logging)
- * @param portOverride - Optional explicit port to use
- * @returns Whether the connection is now established
- */
-async function ensureNativeConnected(trigger: string, portOverride?: unknown): Promise<boolean> {
-  // Concurrency protection: only one ensure flow at a time
-  if (ensurePromise) return ensurePromise;
-
-  ensurePromise = (async () => {
-    // Load auto-connect setting if not yet loaded
-    if (!autoConnectLoaded) {
-      autoConnectEnabled = await loadNativeAutoConnectEnabled();
-      autoConnectLoaded = true;
-      syncKeepaliveHold();
-    }
-
-    // If auto-connect is disabled, do nothing
-    if (!autoConnectEnabled) {
-      console.debug(`${LOG_PREFIX} Auto-connect disabled, skipping ensure (trigger=${trigger})`);
-      return false;
-    }
-
-    // Sync keepalive hold
-    syncKeepaliveHold();
-
-    // Already connected
-    if (nativePort) {
-      console.debug(`${LOG_PREFIX} Already connected (trigger=${trigger})`);
-      return true;
-    }
-
-    // Get the port to use
-    const port = await getPreferredPort(portOverride);
-    console.debug(`${LOG_PREFIX} Attempting connection on port ${port} (trigger=${trigger})`);
-
-    // Attempt connection
-    const ok = connectNativeHost(port);
-    if (!ok) {
-      console.warn(`${LOG_PREFIX} Connection failed (trigger=${trigger})`);
-      scheduleReconnect(`connect_failed:${trigger}`);
-      return false;
-    }
-
-    console.debug(`${LOG_PREFIX} Connection initiated successfully (trigger=${trigger})`);
-    // Note: Don't reset reconnect state here. Wait for SERVER_STARTED confirmation.
-    // Chrome may return a Port but disconnect immediately if native host is missing.
-    return true;
-  })().finally(() => {
-    ensurePromise = null;
-  });
-
-  return ensurePromise;
-}
-
-/**
- * Connect to the native messaging host
- * @returns Whether the connection was initiated successfully
- */
-export function connectNativeHost(port: number = NATIVE_HOST.DEFAULT_PORT): boolean {
-  if (nativePort) {
-    return true;
-  }
-
-  try {
-    nativePort = chrome.runtime.connectNative(HOST_NAME);
-
-    nativePort.onMessage.addListener(async (message) => {
-      if (message.type === NativeMessageType.PROCESS_DATA && message.requestId) {
-        const requestId = message.requestId;
-        const requestPayload = message.payload;
-
-        nativePort?.postMessage({
-          responseToRequestId: requestId,
-          payload: {
-            status: 'success',
-            message: SUCCESS_MESSAGES.TOOL_EXECUTED,
-            data: requestPayload,
-          },
-        });
-      } else if (message.type === NativeMessageType.CALL_TOOL && message.requestId) {
-        const requestId = message.requestId;
-        try {
-          const result = await handleCallTool(message.payload);
-          nativePort?.postMessage({
-            responseToRequestId: requestId,
-            payload: {
-              status: 'success',
-              message: SUCCESS_MESSAGES.TOOL_EXECUTED,
-              data: result,
-            },
-          });
-        } catch (error) {
-          nativePort?.postMessage({
-            responseToRequestId: requestId,
-            payload: {
-              status: 'error',
-              message: ERROR_MESSAGES.TOOL_EXECUTION_FAILED,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          });
-        }
-      } else if (message.type === 'rr_list_published_flows' && message.requestId) {
-        const requestId = message.requestId;
-        try {
-          const published = await listPublished();
-          const items = [] as any[];
-          for (const p of published) {
-            const flow = await getFlow(p.id);
-            if (!flow) continue;
-            items.push({
-              id: p.id,
-              slug: p.slug,
-              version: p.version,
-              name: p.name,
-              description: p.description || flow.description || '',
-              variables: flow.variables || [],
-              meta: flow.meta || {},
-            });
-          }
-          nativePort?.postMessage({
-            responseToRequestId: requestId,
-            payload: { status: 'success', items },
-          });
-        } catch (error: any) {
-          nativePort?.postMessage({
-            responseToRequestId: requestId,
-            payload: { status: 'error', error: error?.message || String(error) },
-          });
-        }
-      } else if (message.type === NativeMessageType.SERVER_STARTED) {
-        const port = message.payload?.port;
-        currentServerStatus = {
-          isRunning: true,
-          port: port,
-          lastUpdated: Date.now(),
-        };
-        await saveServerStatus(currentServerStatus);
-        broadcastServerStatusChange(currentServerStatus);
-        // Server is confirmed running - now we can reset reconnect state
-        resetReconnectState();
-        console.log(`${SUCCESS_MESSAGES.SERVER_STARTED} on port ${port}`);
-      } else if (message.type === NativeMessageType.SERVER_STOPPED) {
-        currentServerStatus = {
-          isRunning: false,
-          port: currentServerStatus.port, // Keep last known port for reconnection
-          lastUpdated: Date.now(),
-        };
-        await saveServerStatus(currentServerStatus);
-        broadcastServerStatusChange(currentServerStatus);
-        console.log(SUCCESS_MESSAGES.SERVER_STOPPED);
-      } else if (message.type === NativeMessageType.ERROR_FROM_NATIVE_HOST) {
-        console.error('Error from native host:', message.payload?.message || 'Unknown error');
-      } else if (message.type === 'file_operation_response') {
-        // Forward file operation response back to the requesting tool
-        chrome.runtime.sendMessage(message).catch(() => {
-          // Ignore if no listeners
-        });
-      }
-    });
-
-    nativePort.onDisconnect.addListener(() => {
-      console.warn(ERROR_MESSAGES.NATIVE_DISCONNECTED, chrome.runtime.lastError);
-      nativePort = null;
-
-      // Mark server as stopped since native host disconnection means server is down
-      void markServerStopped('native_port_disconnected');
-
-      // Handle reconnection based on disconnect reason
-      if (manualDisconnect) {
-        manualDisconnect = false;
-        return;
-      }
-      if (!autoConnectEnabled) return;
-      scheduleReconnect('native_port_disconnected');
-    });
-
-    nativePort.postMessage({ type: NativeMessageType.START, payload: { port } });
-    // Note: Don't reset reconnect state here. Wait for SERVER_STARTED confirmation.
-    // Chrome may return a Port but disconnect immediately if native host is missing.
-    return true;
-  } catch (error) {
-    console.warn(ERROR_MESSAGES.NATIVE_CONNECTION_FAILED, error);
-    nativePort = null;
-    return false;
-  }
-}
-
-/**
- * Initialize native host listeners and load initial state
+ * Initialize bridge host listeners and load initial state
  */
 export const initNativeHostListener = () => {
   // Initialize server status from storage
@@ -477,17 +429,25 @@ export const initNativeHostListener = () => {
       console.error(ERROR_MESSAGES.SERVER_STATUS_LOAD_FAILED, error);
     });
 
+  // 注册WebSocket消息处理器
+  // 注册工具调用处理器
+  addMessageListener(WebSocketMessageType.CALL_TOOL, handleIncomingCallTool);
+  // 注册数据请求处理器
+  addMessageListener(WebSocketMessageType.PROCESS_DATA, handleIncomingProcessData);
+  // 注册列出流程处理器
+  addMessageListener(WebSocketMessageType.LIST_PUBLISHED_FLOWS, handleIncomingListPublishedFlows);
+
   // Auto-connect on SW activation (covers SW restart after idle termination)
-  void ensureNativeConnected('sw_startup').catch(() => {});
+  void ensureConnected('sw_startup').catch(() => {});
 
   // Auto-connect on Chrome browser startup
   chrome.runtime.onStartup.addListener(() => {
-    void ensureNativeConnected('onStartup').catch(() => {});
+    void ensureConnected('onStartup').catch(() => {});
   });
 
   // Auto-connect on extension install/update
   chrome.runtime.onInstalled.addListener(() => {
-    void ensureNativeConnected('onInstalled').catch(() => {});
+    void ensureConnected('onInstalled').catch(() => {});
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -505,48 +465,34 @@ export const initNativeHostListener = () => {
 
     // ENSURE_NATIVE: Trigger ensure without changing autoConnectEnabled
     if (msgType === NativeMessageType.ENSURE_NATIVE) {
-      const portOverride = typeof message === 'object' ? message.port : undefined;
-      ensureNativeConnected('ui_ensure', portOverride)
+      ensureConnected('ui_ensure')
         .then((connected) => {
           sendResponse({ success: true, connected, autoConnectEnabled });
         })
         .catch((e) => {
-          sendResponse({ success: false, connected: nativePort !== null, error: String(e) });
+          sendResponse({ success: false, connected: isWebSocketConnected(), error: String(e) });
         });
       return true;
     }
 
     // CONNECT_NATIVE: Explicit user connect, re-enables auto-connect
     if (msgType === NativeMessageType.CONNECT_NATIVE) {
-      const portOverride = typeof message === 'object' ? message.port : undefined;
-      const normalized = normalizePort(portOverride);
-
       (async () => {
         // Explicit user connect: re-enable auto-connect
-        await setNativeAutoConnectEnabled(true);
-
-        if (normalized) {
-          // Best-effort: persist preferred port
-          try {
-            await chrome.storage.local.set({ [STORAGE_KEYS.NATIVE_SERVER_PORT]: normalized });
-          } catch {
-            // Ignore
-          }
-        }
-
-        return ensureNativeConnected('ui_connect', normalized ?? undefined);
+        await setAutoConnectEnabled(true);
+        return ensureConnected('ui_connect');
       })()
         .then((connected) => {
           sendResponse({ success: true, connected });
         })
         .catch((e) => {
-          sendResponse({ success: false, connected: nativePort !== null, error: String(e) });
+          sendResponse({ success: false, connected: isWebSocketConnected(), error: String(e) });
         });
       return true;
     }
 
     if (msgType === NativeMessageType.PING_NATIVE) {
-      const connected = nativePort !== null;
+      const connected = isWebSocketConnected();
       sendResponse({ connected, autoConnectEnabled });
       return true;
     }
@@ -554,22 +500,12 @@ export const initNativeHostListener = () => {
     // DISCONNECT_NATIVE: Explicit user disconnect, disables auto-connect
     if (msgType === NativeMessageType.DISCONNECT_NATIVE) {
       (async () => {
-        // Explicit user disconnect: disable auto-connect and stop reconnect loop
-        await setNativeAutoConnectEnabled(false);
-        clearReconnectTimer();
-        reconnectAttempts = 0;
+        // Explicit user disconnect: disable auto-connect
+        await setAutoConnectEnabled(false);
         syncKeepaliveHold();
 
-        if (nativePort) {
-          // Only set manualDisconnect if we actually have a port to disconnect.
-          // This prevents the flag from persisting when there's no active connection.
-          manualDisconnect = true;
-          try {
-            nativePort.disconnect();
-          } catch {
-            // Ignore
-          }
-          nativePort = null;
+        if (isWebSocketConnected()) {
+          disconnectWebSocket();
         }
         await markServerStopped('manual_disconnect');
       })()
@@ -586,7 +522,7 @@ export const initNativeHostListener = () => {
       sendResponse({
         success: true,
         serverStatus: currentServerStatus,
-        connected: nativePort !== null,
+        connected: isWebSocketConnected(),
       });
       return true;
     }
@@ -598,7 +534,7 @@ export const initNativeHostListener = () => {
           sendResponse({
             success: true,
             serverStatus: currentServerStatus,
-            connected: nativePort !== null,
+            connected: isWebSocketConnected(),
           });
         })
         .catch((error) => {
@@ -607,21 +543,29 @@ export const initNativeHostListener = () => {
             success: false,
             error: ERROR_MESSAGES.SERVER_STATUS_LOAD_FAILED,
             serverStatus: currentServerStatus,
-            connected: nativePort !== null,
+            connected: isWebSocketConnected(),
           });
         });
       return true;
     }
 
-    // Forward file operation messages to native host
+    // Forward file operation messages (通过WebSocket发送)
     if (message.type === 'forward_to_native' && message.message) {
-      if (nativePort) {
-        nativePort.postMessage(message.message);
+      if (isWebSocketConnected()) {
+        const instanceId = getCurrentInstanceId();
+        sendWebSocketMessage({
+          type: WebSocketMessageType.FILE_OPERATION,
+          instanceId,
+          payload: message.message,
+        });
         sendResponse({ success: true });
       } else {
-        sendResponse({ success: false, error: 'Native host not connected' });
+        sendResponse({ success: false, error: 'WebSocket not connected' });
       }
       return true;
     }
   });
 };
+
+// 导出兼容性常量
+export const HOST_NAME = 'websocket-bridge';
