@@ -312,6 +312,61 @@ export function isConnected(): boolean {
 // ==================== 消息处理 ====================
 
 /**
+ * 消息监听器类型
+ */
+type MessageListener = (message: WebSocketMessage) => void | Promise<void>;
+
+/**
+ * 消息监听器映射
+ */
+const messageListeners: Map<WebSocketMessageType, MessageListener[]> = new Map();
+
+/**
+ * 注册消息监听器
+ */
+export function addMessageListener(
+  type: WebSocketMessageType,
+  listener: MessageListener,
+): void {
+  if (!messageListeners.has(type)) {
+    messageListeners.set(type, []);
+  }
+  messageListeners.get(type)!.push(listener);
+}
+
+/**
+ * 移除消息监听器
+ */
+export function removeMessageListener(
+  type: WebSocketMessageType,
+  listener: MessageListener,
+): void {
+  const listeners = messageListeners.get(type);
+  if (listeners) {
+    const index = listeners.indexOf(listener);
+    if (index > -1) {
+      listeners.splice(index, 1);
+    }
+  }
+}
+
+/**
+ * 触发消息监听器
+ */
+async function triggerMessageListeners(message: WebSocketMessage): Promise<void> {
+  const listeners = messageListeners.get(message.type);
+  if (listeners) {
+    for (const listener of listeners) {
+      try {
+        await listener(message);
+      } catch (error) {
+        console.error(`${LOG_PREFIX} 消息监听器执行失败`, error);
+      }
+    }
+  }
+}
+
+/**
  * 处理接收到的消息
  */
 function handleMessage(message: WebSocketMessage): void {
@@ -333,10 +388,13 @@ function handleMessage(message: WebSocketMessage): void {
       }
       pendingRequests.delete(message.responseToRequestId);
     }
+    // 即使有pending request，也触发监听器（用于状态更新等）
+    void triggerMessageListeners(message);
     return;
   }
 
-  // 处理其他类型的消息（如服务器状态更新等）
+  // 处理其他类型的消息（触发监听器）
+  void triggerMessageListeners(message);
   console.debug(`${LOG_PREFIX} 收到消息`, message);
 }
 
