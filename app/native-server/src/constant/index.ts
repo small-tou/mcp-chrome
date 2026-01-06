@@ -9,6 +9,8 @@ export enum NATIVE_MESSAGE_TYPE {
 }
 
 export const NATIVE_SERVER_PORT = 12306;
+export const WEBSOCKET_SERVER_PORT = 12307;
+export const WEBSOCKET_SERVER_PATH = '/ws';
 
 // Timeout constants (in milliseconds)
 export const TIMEOUTS = {

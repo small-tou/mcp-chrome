@@ -9,6 +9,12 @@ export const NATIVE_HOST = {
   DEFAULT_PORT: 12306,
 } as const;
 
+// WebSocket Configuration
+export const WEBSOCKET_CONFIG = {
+  DEFAULT_URL: 'ws://localhost:12307/ws',
+  DEFAULT_PORT: 12307,
+} as const;
+
 // Chrome Extension Icons
 export const ICONS = {
   NOTIFICATION: 'icon/48.png',
@@ -222,6 +228,8 @@ export const STORAGE_KEYS = {
   SERVER_STATUS: 'serverStatus',
   NATIVE_SERVER_PORT: 'nativeServerPort',
   NATIVE_AUTO_CONNECT_ENABLED: 'nativeAutoConnectEnabled',
+  WEBSOCKET_URL: 'websocketUrl',
+  WEBSOCKET_AUTO_CONNECT_ENABLED: 'websocketAutoConnectEnabled',
   SEMANTIC_MODEL: 'selectedModel',
   USER_PREFERENCES: 'userPreferences',
   VECTOR_INDEX: 'vectorIndex',

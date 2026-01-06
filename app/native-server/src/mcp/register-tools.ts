@@ -81,6 +81,13 @@ export const setupTools = (server: Server) => {
 
 const handleToolCall = async (name: string, args: any): Promise<CallToolResult> => {
   try {
+    // 提取实例ID（如果提供）
+    const instanceId = args?.instanceId as string | undefined;
+    const toolArgs = { ...args };
+    if (instanceId) {
+      delete toolArgs.instanceId; // 从工具参数中移除实例ID
+    }
+
     // If calling a dynamic flow tool (name starts with flow.), proxy to common flow-run tool
     if (name && name.startsWith('flow.')) {
       // We need to resolve flow by slug to ID
@@ -94,9 +101,9 @@ const handleToolCall = async (name: string, args: any): Promise<CallToolResult> 
         const slug = name.slice('flow.'.length);
         const match = items.find((it: any) => it.slug === slug);
         if (!match) throw new Error(`Flow not found for tool ${name}`);
-        const flowArgs = { flowId: match.id, args };
+        const flowArgs = { flowId: match.id, args: toolArgs };
         const proxyRes = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
-          { name: 'record_replay_flow_run', args: flowArgs },
+          { name: 'record_replay_flow_run', args: flowArgs, instanceId },
           NativeMessageType.CALL_TOOL,
           120000,
         );
@@ -118,10 +125,12 @@ const handleToolCall = async (name: string, args: any): Promise<CallToolResult> 
       }
     }
     // 发送请求到Chrome扩展并等待响应
+    // 注意：如果提供了instanceId，应该通过WebSocket路由，这里暂时保留Native Messaging作为fallback
     const response = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
       {
         name,
-        args,
+        args: toolArgs,
+        instanceId, // 传递实例ID（如果提供）
       },
       NativeMessageType.CALL_TOOL,
       120000, // 延长到 120 秒，避免性能分析等长任务超时

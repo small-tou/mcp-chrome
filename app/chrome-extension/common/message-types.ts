@@ -22,6 +22,7 @@ export const BACKGROUND_MESSAGE_TYPES = {
   GET_SERVER_STATUS: 'get_server_status',
   REFRESH_SERVER_STATUS: 'refresh_server_status',
   SERVER_STATUS_CHANGED: 'server_status_changed',
+  WEBSOCKET_STATUS_CHANGED: 'websocket_status_changed',
   INITIALIZE_SEMANTIC_ENGINE: 'initialize_semantic_engine',
   // Record & Replay background control and queries
   RR_START_RECORDING: 'rr_start_recording',

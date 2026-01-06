@@ -56,6 +56,10 @@ export default defineConfig({
       // Allow programmatic control of Chrome Side Panel
       'sidePanel',
     ],
+    // 允许外部网页连接（用于Web Agent Bridge）
+    externally_connectable: {
+      matches: ['<all_urls>'], // 可以根据需要限制为特定域名
+    },
     host_permissions: ['<all_urls>'],
     options_ui: {
       page: 'options.html',
