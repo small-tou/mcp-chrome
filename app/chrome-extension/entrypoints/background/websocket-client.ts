@@ -85,8 +85,11 @@ async function getWebSocketUrl(): Promise<string> {
     console.warn(`${LOG_PREFIX} Failed to read WebSocket URL from storage`, error);
   }
   
-  // 默认URL（可以从环境变量或配置中读取）
-  const defaultUrl = process.env.WEBSOCKET_URL || 'ws://localhost:12307/ws';
+  // 默认URL
+  // 注意：在浏览器环境中，process.env可能不可用，使用默认值
+  const defaultUrl = typeof process !== 'undefined' && process.env?.WEBSOCKET_URL
+    ? process.env.WEBSOCKET_URL
+    : 'ws://localhost:12307/ws';
   return defaultUrl;
 }
 
