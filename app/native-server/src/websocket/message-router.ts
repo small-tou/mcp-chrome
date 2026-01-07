@@ -12,8 +12,6 @@ import {
   ProcessDataResponse,
 } from 'chrome-mcp-shared';
 import { InstanceManager } from './instance-manager';
-// 注意：暂时保留Native Messaging作为过渡方案，后续可以移除
-import nativeMessagingHostInstance from '../native-messaging-host';
 
 const LOG_PREFIX = '[MessageRouter]';
 
@@ -53,6 +51,9 @@ export class MessageRouter {
 
   /**
    * 处理工具调用
+   * 注意：工具调用通常应该从服务器发起（MCP客户端 -> 服务器 -> 扩展）
+   * 但如果扩展主动发送工具调用请求，这里会处理并转发回扩展
+   * 实际上，扩展不应该发送CALL_TOOL消息到服务器，这个处理器主要是为了兼容性
    */
   private async handleCallTool(ws: WebSocket, message: WebSocketMessage): Promise<void> {
     const request = message.payload as CallToolRequest;
@@ -63,51 +64,29 @@ export class MessageRouter {
       return;
     }
 
-    try {
-      // 通过Native Messaging Host发送请求到扩展
-      // 注意：这里暂时保留Native Messaging作为中间层，后续可以移除
-      const response = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
-        {
-          name: request.name,
-          args: request.args,
-          instanceId, // 传递实例ID
-        },
-        'call_tool',
-        120_000, // 120秒超时
-      );
-
-      const toolResponse: CallToolResponse = {
-        status: response.status === 'success' ? 'success' : 'error',
-        data: response.data,
-        error: response.error,
-      };
-
-      this.sendMessage(ws, {
-        type: WebSocketMessageType.CALL_TOOL_RESPONSE,
-        responseToRequestId: message.requestId,
-        instanceId,
-        payload: toolResponse,
-      });
-    } catch (error) {
-      console.error(`${LOG_PREFIX} 工具调用失败`, error);
-      const toolResponse: CallToolResponse = {
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      };
-      this.sendMessage(ws, {
-        type: WebSocketMessageType.CALL_TOOL_RESPONSE,
-        responseToRequestId: message.requestId,
-        instanceId,
-        payload: toolResponse,
-      });
-    }
+    // 工具调用应该从服务器发起，扩展不应该发送CALL_TOOL消息到服务器
+    // 如果收到，直接返回错误
+    console.warn(
+      `${LOG_PREFIX} 收到来自扩展的工具调用请求，这不应该发生。工具调用应该从服务器发起。`,
+    );
+    const toolResponse: CallToolResponse = {
+      status: 'error',
+      error: '工具调用应该从服务器发起，而不是从扩展发起',
+    };
+    this.sendMessage(ws, {
+      type: WebSocketMessageType.CALL_TOOL_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: toolResponse,
+    });
   }
 
   /**
    * 处理数据请求
+   * 注意：数据请求应该从服务器发起，扩展不应该发送PROCESS_DATA消息到服务器
+   * 如果收到，直接返回错误
    */
   private async handleProcessData(ws: WebSocket, message: WebSocketMessage): Promise<void> {
-    const request = message.payload as ProcessDataRequest;
     const instanceId = message.instanceId || this.instanceManager.getInstanceId(ws);
 
     if (!instanceId) {
@@ -115,42 +94,25 @@ export class MessageRouter {
       return;
     }
 
-    try {
-      const response = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
-        request.data,
-        'process_data',
-        20_000,
-      );
-
-      const dataResponse: ProcessDataResponse = {
-        status: response.status === 'success' ? 'success' : 'error',
-        data: response.data,
-        error: response.error,
-      };
-
-      this.sendMessage(ws, {
-        type: WebSocketMessageType.PROCESS_DATA_RESPONSE,
-        responseToRequestId: message.requestId,
-        instanceId,
-        payload: dataResponse,
-      });
-    } catch (error) {
-      console.error(`${LOG_PREFIX} 数据处理失败`, error);
-      const dataResponse: ProcessDataResponse = {
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      };
-      this.sendMessage(ws, {
-        type: WebSocketMessageType.PROCESS_DATA_RESPONSE,
-        responseToRequestId: message.requestId,
-        instanceId,
-        payload: dataResponse,
-      });
-    }
+    // 数据请求应该从服务器发起，扩展不应该发送PROCESS_DATA消息到服务器
+    console.warn(`${LOG_PREFIX} 收到来自扩展的数据请求，这不应该发生。数据请求应该从服务器发起。`);
+    const dataResponse: ProcessDataResponse = {
+      status: 'error',
+      error: '数据请求应该从服务器发起，而不是从扩展发起',
+    };
+    this.sendMessage(ws, {
+      type: WebSocketMessageType.PROCESS_DATA_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: dataResponse,
+    });
   }
 
   /**
    * 处理列出已发布流程的请求
+   * 注意：列出流程请求应该从服务器发起（在listDynamicFlowTools中）
+   * 但如果扩展主动发送请求，这里会处理
+   * 实际上，扩展不应该发送LIST_PUBLISHED_FLOWS消息到服务器，这个处理器主要是为了兼容性
    */
   private async handleListPublishedFlows(ws: WebSocket, message: WebSocketMessage): Promise<void> {
     const instanceId = message.instanceId || this.instanceManager.getInstanceId(ws);
@@ -160,27 +122,26 @@ export class MessageRouter {
       return;
     }
 
-    try {
-      const response = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
-        {},
-        'rr_list_published_flows',
-        20_000,
-      );
-
-      this.sendMessage(ws, {
-        type: WebSocketMessageType.LIST_PUBLISHED_FLOWS_RESPONSE,
-        responseToRequestId: message.requestId,
-        instanceId,
-        payload: response,
-      });
-    } catch (error) {
-      console.error(`${LOG_PREFIX} 列出已发布流程失败`, error);
-      this.sendError(ws, error instanceof Error ? error.message : String(error), message.requestId);
-    }
+    // 列出流程请求应该从服务器发起，扩展不应该发送LIST_PUBLISHED_FLOWS消息到服务器
+    console.warn(
+      `${LOG_PREFIX} 收到来自扩展的列出流程请求，这不应该发生。列出流程请求应该从服务器发起。`,
+    );
+    this.sendMessage(ws, {
+      type: WebSocketMessageType.LIST_PUBLISHED_FLOWS_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: {
+        status: 'error',
+        error: '列出流程请求应该从服务器发起，而不是从扩展发起',
+        items: [],
+      },
+    });
   }
 
   /**
    * 处理文件操作
+   * 注意：文件操作应该从服务器发起，扩展不应该发送FILE_OPERATION消息到服务器
+   * 如果收到，直接返回错误
    */
   private async handleFileOperation(ws: WebSocket, message: WebSocketMessage): Promise<void> {
     const instanceId = message.instanceId || this.instanceManager.getInstanceId(ws);
@@ -190,24 +151,19 @@ export class MessageRouter {
       return;
     }
 
-    try {
-      // 文件操作通过Native Messaging Host处理
-      const response = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
-        message.payload,
-        'file_operation',
-        30_000,
-      );
-
-      this.sendMessage(ws, {
-        type: WebSocketMessageType.FILE_OPERATION_RESPONSE,
-        responseToRequestId: message.requestId,
-        instanceId,
-        payload: response,
-      });
-    } catch (error) {
-      console.error(`${LOG_PREFIX} 文件操作失败`, error);
-      this.sendError(ws, error instanceof Error ? error.message : String(error), message.requestId);
-    }
+    // 文件操作应该从服务器发起，扩展不应该发送FILE_OPERATION消息到服务器
+    console.warn(
+      `${LOG_PREFIX} 收到来自扩展的文件操作请求，这不应该发生。文件操作应该从服务器发起。`,
+    );
+    this.sendMessage(ws, {
+      type: WebSocketMessageType.FILE_OPERATION_RESPONSE,
+      responseToRequestId: message.requestId,
+      instanceId,
+      payload: {
+        success: false,
+        error: '文件操作应该从服务器发起，而不是从扩展发起',
+      },
+    });
   }
 
   /**

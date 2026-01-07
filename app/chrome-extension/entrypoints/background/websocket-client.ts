@@ -2,15 +2,8 @@
  * WebSocket客户端实现
  * 用于Chrome扩展与Bridge服务器之间的WebSocket通信
  */
-import {
-  WebSocketMessage,
-  WebSocketMessageType,
-  InstanceRegisterRequest,
-  InstanceRegisterResponse,
-  CallToolRequest,
-  CallToolResponse,
-} from 'chrome-mcp-shared';
-import { STORAGE_KEYS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '@/common/constants';
+import { WebSocketMessage, WebSocketMessageType } from 'chrome-mcp-shared';
+import { STORAGE_KEYS, WEBSOCKET_CONFIG } from '@/common/constants';
 import { BACKGROUND_MESSAGE_TYPES } from '@/common/message-types';
 
 const LOG_PREFIX = '[WebSocketClient]';
@@ -39,7 +32,7 @@ let heartbeatTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 let manualDisconnect = false;
 let autoConnectEnabled = true;
-let pendingRequests = new Map<string, PendingRequest>();
+const pendingRequests = new Map<string, PendingRequest>();
 let messageQueue: WebSocketMessage[] = [];
 
 // ==================== 工具函数 ====================
@@ -59,10 +52,7 @@ function getReconnectDelayMs(attempt: number): number {
   if (attempt >= RECONNECT_MAX_FAST_ATTEMPTS) {
     return withJitter(RECONNECT_COOLDOWN_DELAY_MS);
   }
-  const delay = Math.min(
-    RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt),
-    RECONNECT_MAX_DELAY_MS,
-  );
+  const delay = Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt), RECONNECT_MAX_DELAY_MS);
   return withJitter(delay);
 }
 
@@ -78,18 +68,36 @@ function generateRequestId(): string {
  */
 async function getWebSocketUrl(): Promise<string> {
   try {
-    const result = await chrome.storage.local.get([STORAGE_KEYS.WEBSOCKET_URL]);
+    // 首先尝试读取保存的 WebSocket URL
+    const result = await chrome.storage.local.get([
+      STORAGE_KEYS.WEBSOCKET_URL,
+      STORAGE_KEYS.NATIVE_SERVER_PORT,
+    ]);
+
     const url = result[STORAGE_KEYS.WEBSOCKET_URL] as string | undefined;
     if (url) return url;
+
+    // 如果 WebSocket URL 不存在，尝试从端口号生成
+    const port = result[STORAGE_KEYS.NATIVE_SERVER_PORT] as number | undefined;
+    if (port && typeof port === 'number' && port > 0) {
+      const generatedUrl = `ws://localhost:${port}/ws`;
+      console.debug(`${LOG_PREFIX} 从端口号生成 WebSocket URL: ${generatedUrl}`);
+      // 同步保存生成的 URL，以便下次直接使用
+      await chrome.storage.local.set({
+        [STORAGE_KEYS.WEBSOCKET_URL]: generatedUrl,
+      });
+      return generatedUrl;
+    }
   } catch (error) {
     console.warn(`${LOG_PREFIX} Failed to read WebSocket URL from storage`, error);
   }
-  
+
   // 默认URL
   // 注意：在浏览器环境中，process.env可能不可用，使用默认值
-  const defaultUrl = typeof process !== 'undefined' && process.env?.WEBSOCKET_URL
-    ? process.env.WEBSOCKET_URL
-    : 'ws://localhost:12307/ws';
+  const defaultUrl =
+    typeof process !== 'undefined' && process.env?.WEBSOCKET_URL
+      ? process.env.WEBSOCKET_URL
+      : WEBSOCKET_CONFIG.DEFAULT_URL;
   return defaultUrl;
 }
 
@@ -137,9 +145,7 @@ function scheduleReconnect(reason: string): void {
   if (reconnectTimer) return;
 
   const delay = getReconnectDelayMs(reconnectAttempts);
-  console.debug(
-    `${LOG_PREFIX} 安排重连，${delay}ms后 (尝试=${reconnectAttempts}, 原因=${reason})`,
-  );
+  console.debug(`${LOG_PREFIX} 安排重连，${delay}ms后 (尝试=${reconnectAttempts}, 原因=${reason})`);
 
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
@@ -231,14 +237,37 @@ export async function connect(): Promise<boolean> {
       startHeartbeat();
       flushMessageQueue();
       broadcastConnectionStatus(true);
+
+      // 连接成功后，尝试获取并显示实例ID
+      import('./instance-manager')
+        .then(({ getCurrentInstanceId }) => {
+          const instanceId = getCurrentInstanceId();
+          if (instanceId) {
+            console.log(
+              `%c🔗 WebSocket已连接，当前实例ID: ${instanceId}`,
+              'color: #3b82f6; font-weight: bold; font-size: 14px;',
+            );
+          }
+        })
+        .catch(() => {
+          // 忽略错误
+        });
     };
 
     ws.onmessage = (event) => {
+      console.log(`${LOG_PREFIX} 收到 WebSocket 原始消息:`, {
+        dataType: typeof event.data,
+        dataLength: event.data?.length,
+        dataPreview: typeof event.data === 'string' ? event.data.substring(0, 200) : 'non-string',
+      });
       try {
         const message: WebSocketMessage = JSON.parse(event.data);
+        console.log(`${LOG_PREFIX} 解析后的消息:`, message);
         handleMessage(message);
       } catch (error) {
-        console.error(`${LOG_PREFIX} 解析消息失败`, error);
+        console.error(`${LOG_PREFIX} 解析消息失败`, error, {
+          rawData: event.data,
+        });
       }
     };
 
@@ -324,23 +353,21 @@ const messageListeners: Map<WebSocketMessageType, MessageListener[]> = new Map()
 /**
  * 注册消息监听器
  */
-export function addMessageListener(
-  type: WebSocketMessageType,
-  listener: MessageListener,
-): void {
+export function addMessageListener(type: WebSocketMessageType, listener: MessageListener): void {
   if (!messageListeners.has(type)) {
     messageListeners.set(type, []);
   }
   messageListeners.get(type)!.push(listener);
+  console.log(`${LOG_PREFIX} 注册监听器: ${type}`, {
+    totalListeners: messageListeners.get(type)!.length,
+    allRegisteredTypes: Array.from(messageListeners.keys()),
+  });
 }
 
 /**
  * 移除消息监听器
  */
-export function removeMessageListener(
-  type: WebSocketMessageType,
-  listener: MessageListener,
-): void {
+export function removeMessageListener(type: WebSocketMessageType, listener: MessageListener): void {
   const listeners = messageListeners.get(type);
   if (listeners) {
     const index = listeners.indexOf(listener);
@@ -356,13 +383,22 @@ export function removeMessageListener(
 async function triggerMessageListeners(message: WebSocketMessage): Promise<void> {
   const listeners = messageListeners.get(message.type);
   if (listeners) {
+    console.debug(`${LOG_PREFIX} 触发 ${listeners.length} 个监听器处理消息类型: ${message.type}`);
     for (const listener of listeners) {
       try {
         await listener(message);
       } catch (error) {
-        console.error(`${LOG_PREFIX} 消息监听器执行失败`, error);
+        console.error(`${LOG_PREFIX} 消息监听器执行失败`, {
+          type: message.type,
+          error,
+          stack: error instanceof Error ? error.stack : undefined,
+        });
       }
     }
+  } else {
+    console.warn(`${LOG_PREFIX} 没有找到消息类型的监听器: ${message.type}`, {
+      availableTypes: Array.from(messageListeners.keys()),
+    });
   }
 }
 
@@ -370,16 +406,26 @@ async function triggerMessageListeners(message: WebSocketMessage): Promise<void>
  * 处理接收到的消息
  */
 function handleMessage(message: WebSocketMessage): void {
+  console.log(`${LOG_PREFIX} 处理消息:`, {
+    type: message.type,
+    requestId: message.requestId,
+    responseToRequestId: message.responseToRequestId,
+    instanceId: message.instanceId,
+  });
+
   // 处理心跳
   if (message.type === WebSocketMessageType.PONG) {
+    console.log(`${LOG_PREFIX} 处理心跳响应`);
     handlePong();
     return;
   }
 
   // 处理响应消息
   if (message.responseToRequestId) {
+    console.log(`${LOG_PREFIX} 这是响应消息，requestId: ${message.responseToRequestId}`);
     const pending = pendingRequests.get(message.responseToRequestId);
     if (pending) {
+      console.log(`${LOG_PREFIX} 找到对应的待处理请求`);
       clearTimeout(pending.timeoutId);
       if (message.error) {
         pending.reject(new Error(message.error as string));
@@ -387,15 +433,24 @@ function handleMessage(message: WebSocketMessage): void {
         pending.resolve(message.payload);
       }
       pendingRequests.delete(message.responseToRequestId);
+    } else {
+      console.log(`${LOG_PREFIX} 未找到对应的待处理请求`);
     }
     // 即使有pending request，也触发监听器（用于状态更新等）
+    console.log(`${LOG_PREFIX} 触发响应消息的监听器`);
     void triggerMessageListeners(message);
     return;
   }
 
   // 处理其他类型的消息（触发监听器）
+  console.log(`${LOG_PREFIX} 这是请求消息，查找监听器...`);
+  const listeners = messageListeners.get(message.type);
+  console.log(`${LOG_PREFIX} 查找监听器结果:`, {
+    type: message.type,
+    listenerCount: listeners?.length || 0,
+    allRegisteredTypes: Array.from(messageListeners.keys()),
+  });
   void triggerMessageListeners(message);
-  console.debug(`${LOG_PREFIX} 收到消息`, message);
 }
 
 // ==================== 消息发送 ====================

@@ -12,7 +12,12 @@ import {
   ProcessDataResponse,
 } from 'chrome-mcp-shared';
 import { BACKGROUND_MESSAGE_TYPES } from '@/common/message-types';
-import { STORAGE_KEYS, ERROR_MESSAGES, SUCCESS_MESSAGES, WEBSOCKET_CONFIG } from '@/common/constants';
+import {
+  STORAGE_KEYS,
+  ERROR_MESSAGES,
+  SUCCESS_MESSAGES,
+  WEBSOCKET_CONFIG,
+} from '@/common/constants';
 import { handleCallTool } from './tools';
 import { listPublished, getFlow } from './record-replay/flow-store';
 import { acquireKeepalive } from './keepalive-manager';
@@ -50,35 +55,8 @@ let currentServerStatus: ServerStatus = {
 };
 
 // ==================== 消息监听器 ====================
-
-type MessageListener = (message: any) => void | Promise<void>;
-const messageListeners: Map<string, MessageListener[]> = new Map();
-
-/**
- * 注册消息监听器
- */
-function addMessageListener(type: string, listener: MessageListener): void {
-  if (!messageListeners.has(type)) {
-    messageListeners.set(type, []);
-  }
-  messageListeners.get(type)!.push(listener);
-}
-
-/**
- * 触发消息监听器
- */
-async function triggerMessageListeners(type: string, message: any): Promise<void> {
-  const listeners = messageListeners.get(type);
-  if (listeners) {
-    for (const listener of listeners) {
-      try {
-        await listener(message);
-      } catch (error) {
-        console.error(`${LOG_PREFIX} 消息监听器执行失败`, error);
-      }
-    }
-  }
-}
+// 注意：消息监听器现在直接使用 websocket-client 中的 addMessageListener
+// 不再需要本地的消息监听器系统
 
 // ==================== 服务器状态管理 ====================
 
@@ -194,16 +172,35 @@ function setupWebSocketMessageHandlers(): void {
  * 处理工具调用请求（从服务器接收）
  */
 async function handleIncomingCallTool(message: WebSocketMessage): Promise<void> {
+  console.log(`${LOG_PREFIX} 收到工具调用请求:`, {
+    type: message.type,
+    requestId: message.requestId,
+    instanceId: message.instanceId,
+    toolName: (message.payload as CallToolRequest)?.name,
+  });
+
   const request = message.payload as CallToolRequest;
   const instanceId = message.instanceId || getCurrentInstanceId();
 
+  // 检查 instanceId 是否匹配
+  const currentInstanceId = getCurrentInstanceId();
+  if (message.instanceId && currentInstanceId && message.instanceId !== currentInstanceId) {
+    console.warn(`${LOG_PREFIX} 实例ID不匹配:`, {
+      messageInstanceId: message.instanceId,
+      currentInstanceId: currentInstanceId,
+    });
+    // 即使不匹配，也继续处理（可能服务器端有bug，但还是应该响应）
+  }
+
   try {
+    console.log(`${LOG_PREFIX} 开始执行工具:`, request.name, request.args);
     const result = await handleCallTool(request);
     const response: CallToolResponse = {
       status: 'success',
       data: result,
     };
 
+    console.log(`${LOG_PREFIX} 工具执行成功:`, request.name);
     sendWebSocketMessage({
       type: WebSocketMessageType.CALL_TOOL_RESPONSE,
       responseToRequestId: message.requestId,
@@ -211,6 +208,7 @@ async function handleIncomingCallTool(message: WebSocketMessage): Promise<void> 
       payload: response,
     });
   } catch (error) {
+    console.error(`${LOG_PREFIX} 工具执行失败:`, request.name, error);
     const response: CallToolResponse = {
       status: 'error',
       error: error instanceof Error ? error.message : String(error),
@@ -352,7 +350,10 @@ async function ensureConnected(trigger: string): Promise<boolean> {
 
     // 注册实例
     try {
-      await registerInstance();
+      const instanceId = await registerInstance();
+      if (instanceId) {
+        console.log(`${LOG_PREFIX} WebSocket连接成功，实例ID: ${instanceId}`);
+      }
     } catch (error) {
       console.warn(`${LOG_PREFIX} 实例注册失败`, error);
     }
@@ -431,6 +432,7 @@ export const initNativeHostListener = () => {
 
   // 注册WebSocket消息处理器
   // 注册工具调用处理器
+  console.log(`${LOG_PREFIX} 注册消息监听器: CALL_TOOL = ${WebSocketMessageType.CALL_TOOL}`);
   addMessageListener(WebSocketMessageType.CALL_TOOL, handleIncomingCallTool);
   // 注册数据请求处理器
   addMessageListener(WebSocketMessageType.PROCESS_DATA, handleIncomingProcessData);

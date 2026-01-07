@@ -59,7 +59,7 @@ export async function registerInstance(): Promise<string> {
   registrationPromise = (async () => {
     try {
       const instanceId = currentInstance?.instanceId || generateInstanceId();
-      
+
       const request: InstanceRegisterRequest = {
         clientInfo: {
           userAgent: navigator.userAgent,
@@ -84,6 +84,21 @@ export async function registerInstance(): Promise<string> {
           lastActivity: Date.now(),
         };
         console.log(`${LOG_PREFIX} 实例注册成功: ${response.instanceId}`);
+        console.log(
+          `%c✅ 当前实例ID: ${response.instanceId}`,
+          'color: #10b981; font-weight: bold; font-size: 14px;',
+        );
+
+        // 广播实例ID变化
+        chrome.runtime
+          .sendMessage({
+            type: 'INSTANCE_ID_CHANGED',
+            instanceId: response.instanceId,
+          })
+          .catch(() => {
+            // 忽略错误（可能没有监听器）
+          });
+
         return response.instanceId;
       } else {
         throw new Error('服务器返回无效的实例ID');

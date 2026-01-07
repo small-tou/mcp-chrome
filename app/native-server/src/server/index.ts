@@ -128,42 +128,8 @@ export class Server {
   // ============================================================
 
   private setupExtensionRoutes(): void {
-    this.fastify.get(
-      '/ask-extension',
-      async (request: FastifyRequest<{ Body: ExtensionRequestPayload }>, reply: FastifyReply) => {
-        if (!this.nativeHost) {
-          return reply
-            .status(HTTP_STATUS.INTERNAL_SERVER_ERROR)
-            .send({ error: ERROR_MESSAGES.NATIVE_HOST_NOT_AVAILABLE });
-        }
-        if (!this.isRunning) {
-          return reply
-            .status(HTTP_STATUS.INTERNAL_SERVER_ERROR)
-            .send({ error: ERROR_MESSAGES.SERVER_NOT_RUNNING });
-        }
-
-        try {
-          const extensionResponse = await this.nativeHost.sendRequestToExtensionAndWait(
-            request.query,
-            'process_data',
-            TIMEOUTS.EXTENSION_REQUEST_TIMEOUT,
-          );
-          return reply.status(HTTP_STATUS.OK).send({ status: 'success', data: extensionResponse });
-        } catch (error: unknown) {
-          const err = error as Error;
-          if (err.message.includes('timed out')) {
-            return reply
-              .status(HTTP_STATUS.GATEWAY_TIMEOUT)
-              .send({ status: 'error', message: ERROR_MESSAGES.REQUEST_TIMEOUT });
-          } else {
-            return reply.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).send({
-              status: 'error',
-              message: `Failed to get response from extension: ${err.message}`,
-            });
-          }
-        }
-      },
-    );
+    // 已移除 /ask-extension 路由，所有通信现在通过 WebSocket 进行
+    // 如果需要与扩展通信，请使用 WebSocket 连接
   }
 
   // ============================================================
@@ -227,6 +193,25 @@ export class Server {
         // Transport found, proceed
       } else if (!sessionId && isInitializeRequest(request.body)) {
         const newSessionId = randomUUID();
+
+        // 从多个来源提取 INSTANCE_ID 鉴权参数（优先级：初始化 params > HTTP header > URL query）
+        const initializeParams = (request.body as any)?.params;
+        const instanceId =
+          initializeParams?.INSTANCE_ID ||
+          (request.headers['x-instance-id'] as string | undefined) ||
+          ((request.query as any)?.instanceId as string | undefined);
+
+        if (instanceId) {
+          // 将 INSTANCE_ID 存储到 session 映射中
+          const { sessionInstanceIdMap } = await import('../mcp/mcp-server.js');
+          sessionInstanceIdMap.set(newSessionId, instanceId);
+          console.log(
+            `[MCP] 初始化请求中提取到 INSTANCE_ID: ${instanceId}，sessionId: ${newSessionId}`,
+          );
+        } else {
+          console.warn(`[MCP] 初始化请求中未找到 INSTANCE_ID 鉴权参数`);
+        }
+
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => newSessionId,
           onsessioninitialized: (initializedSessionId) => {
@@ -236,8 +221,11 @@ export class Server {
           },
         });
 
-        transport.onclose = () => {
-          if (transport?.sessionId && this.transportsMap.get(transport.sessionId)) {
+        transport.onclose = async () => {
+          if (transport?.sessionId) {
+            // 清理 session 映射
+            const { sessionInstanceIdMap } = await import('../mcp/mcp-server.js');
+            sessionInstanceIdMap.delete(transport.sessionId);
             this.transportsMap.delete(transport.sessionId);
           }
         };
@@ -247,8 +235,23 @@ export class Server {
         return;
       }
 
+      // 此时 transport 一定存在（因为前面的逻辑已经确保创建或获取了 transport）
+      // 但为了类型安全，我们需要显式检查
+      if (!transport) {
+        reply.code(HTTP_STATUS.INTERNAL_SERVER_ERROR).send({ error: 'Transport not available' });
+        return;
+      }
+
+      // 使用局部变量确保类型窄化
+      const finalTransport: StreamableHTTPServerTransport = transport;
+      const finalSessionId = finalTransport.sessionId || sessionId || '';
+
       try {
-        await transport.handleRequest(request.raw, reply.raw, request.body);
+        // 使用 AsyncLocalStorage 在当前异步上下文中存储 sessionId
+        const { sessionIdStorage } = await import('../mcp/mcp-server.js');
+        await sessionIdStorage.run(finalSessionId, async () => {
+          await finalTransport.handleRequest(request.raw, reply.raw, request.body);
+        });
       } catch (error) {
         if (!reply.sent) {
           reply
@@ -341,7 +344,7 @@ export class Server {
       process.env.MCP_HTTP_PORT = String(port);
 
       // 初始化WebSocket服务器
-      this.initWebSocketServer();
+      await this.initWebSocketServer();
 
       this.isRunning = true;
     } catch (err) {
@@ -353,7 +356,7 @@ export class Server {
   /**
    * 初始化WebSocket服务器
    */
-  private initWebSocketServer(): void {
+  private async initWebSocketServer(): Promise<void> {
     if (this.websocketServer) {
       return; // 已经初始化
     }
@@ -373,6 +376,11 @@ export class Server {
     this.instanceManager.startCleanupTask();
 
     console.log(`[Server] WebSocket服务器已启动，路径: ${WEBSOCKET_SERVER_PATH}`);
+
+    // 更新MCP Server的工具调用处理器，传入InstanceManager引用
+    const { setupTools } = await import('../mcp/register-tools.js');
+    const mcpServer = getMcpServer();
+    setupTools(mcpServer, this.instanceManager, this.websocketServer);
   }
 
   public async stop(): Promise<void> {

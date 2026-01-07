@@ -165,6 +165,7 @@
 **文件**: `app/chrome-extension/entrypoints/background/websocket-client.ts`
 
 **功能**:
+
 - WebSocket 连接管理
 - 自动重连机制（指数退避）
 - 心跳机制（保持连接活跃）
@@ -173,30 +174,31 @@
 - 消息监听器机制
 
 **主要函数**:
+
 ```typescript
 // 连接WebSocket服务器
-export async function connect(): Promise<boolean>
+export async function connect(): Promise<boolean>;
 
 // 断开连接
-export function disconnect(): void
+export function disconnect(): void;
 
 // 检查连接状态
-export function isConnected(): boolean
+export function isConnected(): boolean;
 
 // 发送消息（不等待响应）
-export function sendMessage(message: WebSocketMessage): void
+export function sendMessage(message: WebSocketMessage): void;
 
 // 发送请求并等待响应
-export function sendRequest<T>(message: WebSocketMessage, timeoutMs?: number): Promise<T>
+export function sendRequest<T>(message: WebSocketMessage, timeoutMs?: number): Promise<T>;
 
 // 注册消息监听器
-export function addMessageListener(type: WebSocketMessageType, listener: MessageListener): void
+export function addMessageListener(type: WebSocketMessageType, listener: MessageListener): void;
 
 // 移除消息监听器
-export function removeMessageListener(type: WebSocketMessageType, listener: MessageListener): void
+export function removeMessageListener(type: WebSocketMessageType, listener: MessageListener): void;
 
 // 初始化WebSocket客户端
-export function initWebSocketClient(): void
+export function initWebSocketClient(): void;
 ```
 
 #### 2.2 实例管理器
@@ -204,29 +206,31 @@ export function initWebSocketClient(): void
 **文件**: `app/chrome-extension/entrypoints/background/instance-manager.ts`
 
 **功能**:
+
 - 生成唯一实例ID
 - 向服务器注册实例
 - 管理实例状态
 
 **主要函数**:
+
 ```typescript
 // 注册实例到服务器
-export async function registerInstance(): Promise<string>
+export async function registerInstance(): Promise<string>;
 
 // 注销实例
-export async function unregisterInstance(): Promise<void>
+export async function unregisterInstance(): Promise<void>;
 
 // 获取当前实例ID
-export function getCurrentInstanceId(): string | null
+export function getCurrentInstanceId(): string | null;
 
 // 检查实例是否已注册
-export function isInstanceRegistered(): boolean
+export function isInstanceRegistered(): boolean;
 
 // 更新实例活动时间
-export function updateInstanceActivity(): void
+export function updateInstanceActivity(): void;
 
 // 初始化实例管理器
-export function initInstanceManager(): void
+export function initInstanceManager(): void;
 ```
 
 #### 2.3 外部消息监听
@@ -234,11 +238,13 @@ export function initInstanceManager(): void
 **文件**: `app/chrome-extension/entrypoints/background/external-messaging.ts`
 
 **功能**:
+
 - 监听来自网页的 `chrome.runtime.sendMessage`
 - 处理实例注册请求
 - 处理连接状态查询
 
 **支持的消息类型**:
+
 - `register_instance`: 注册实例
 - `get_instance_id`: 获取实例ID
 - `connect_websocket`: 连接WebSocket
@@ -249,6 +255,7 @@ export function initInstanceManager(): void
 **文件**: `app/chrome-extension/entrypoints/background/native-host.ts`
 
 **改造内容**:
+
 - ✅ 移除了所有 `chrome.runtime.connectNative` 代码
 - ✅ 改为使用 WebSocket 客户端
 - ✅ 保持了相同的 API 接口（向后兼容）
@@ -256,12 +263,13 @@ export function initInstanceManager(): void
 - ✅ 保留了自动连接和重连逻辑
 
 **主要函数**（保持不变）:
+
 ```typescript
 // 连接Bridge服务器（现在使用WebSocket）
-export function connectNativeHost(port?: number): boolean
+export function connectNativeHost(port?: number): boolean;
 
 // 初始化监听器
-export const initNativeHostListener: () => void
+export const initNativeHostListener: () => void;
 ```
 
 ### 3. Bridge 服务器端
@@ -271,22 +279,24 @@ export const initNativeHostListener: () => void
 **文件**: `app/native-server/src/websocket/websocket-server.ts`
 
 **功能**:
+
 - 启动 WebSocket 服务器
 - 处理客户端连接
 - 管理连接生命周期
 - 处理实例注册/注销
 
 **主要类**:
+
 ```typescript
 export class WebSocketServerManager {
   // 启动WebSocket服务器
-  public start(httpServer: HTTPServer, path?: string): void
+  public start(httpServer: HTTPServer, path?: string): void;
 
   // 停止WebSocket服务器
-  public stop(): void
+  public stop(): void;
 
   // 发送消息到WebSocket连接
-  public sendMessage(ws: WebSocket, message: WebSocketMessage): void
+  public sendMessage(ws: WebSocket, message: WebSocketMessage): void;
 }
 ```
 
@@ -295,28 +305,30 @@ export class WebSocketServerManager {
 **文件**: `app/native-server/src/websocket/instance-manager.ts`
 
 **功能**:
+
 - 维护实例ID到WebSocket连接的映射
 - 实例注册和注销
 - 实例超时清理
 - 连接管理
 
 **主要类**:
+
 ```typescript
 export class InstanceManager {
   // 注册实例
-  public register(connection: WebSocket, providedInstanceId?: string): string
+  public register(connection: WebSocket, providedInstanceId?: string): string;
 
   // 注销实例
-  public unregister(instanceId: string): boolean
+  public unregister(instanceId: string): boolean;
 
   // 获取实例的连接
-  public getConnection(instanceId: string): WebSocket | null
+  public getConnection(instanceId: string): WebSocket | null;
 
   // 获取实例ID（通过连接）
-  public getInstanceId(connection: WebSocket): string | null
+  public getInstanceId(connection: WebSocket): string | null;
 
   // 清理超时的实例
-  public cleanupInactiveInstances(): void
+  public cleanupInactiveInstances(): void;
 }
 ```
 
@@ -325,16 +337,18 @@ export class InstanceManager {
 **文件**: `app/native-server/src/websocket/message-router.ts`
 
 **功能**:
+
 - 根据实例ID路由消息到对应的WebSocket连接
 - 处理工具调用请求
 - 处理数据请求
 - 处理文件操作
 
 **主要类**:
+
 ```typescript
 export class MessageRouter {
   // 路由消息到对应的实例
-  public route(ws: WebSocket, message: WebSocketMessage): void
+  public route(ws: WebSocket, message: WebSocketMessage): void;
 }
 ```
 
@@ -345,11 +359,13 @@ export class MessageRouter {
 **文件**: `app/chrome-extension/inject-scripts/web-agent-bridge.js`
 
 **功能**:
+
 - 提供 API 供 AI agent 在网页中调用
 - 通过 `chrome.runtime.sendMessage` 与扩展通信
 - 处理实例注册和ID返回
 
 **使用方法**:
+
 ```javascript
 // 在网页中注入脚本
 const script = document.createElement('script');
@@ -357,13 +373,13 @@ script.src = chrome.runtime.getURL('inject-scripts/web-agent-bridge.js');
 document.head.appendChild(script);
 
 // 等待脚本加载后使用
-window.__chromeMcpWebAgentBridge.registerInstance()
-  .then(instanceId => {
-    console.log('实例ID:', instanceId);
-  });
+window.__chromeMcpWebAgentBridge.registerInstance().then((instanceId) => {
+  console.log('实例ID:', instanceId);
+});
 ```
 
 **API**:
+
 ```javascript
 // 注册实例并获取实例ID
 window.__chromeMcpWebAgentBridge.registerInstance(clientInfo?: Object): Promise<string>
@@ -397,11 +413,12 @@ export const WEBSOCKET_SERVER_PATH = '/ws';
 
 ```typescript
 await chrome.storage.local.set({
-  websocketUrl: 'ws://localhost:12307/ws'
+  websocketUrl: 'ws://localhost:12307/ws',
 });
 ```
 
 或通过环境变量（开发环境）：
+
 ```bash
 WEBSOCKET_URL=ws://localhost:12307/ws
 ```
@@ -420,7 +437,7 @@ WEBSOCKET_URL=ws://localhost:12307/ws
 
 ```javascript
 // 等待脚本加载
-await new Promise(resolve => {
+await new Promise((resolve) => {
   if (window.__chromeMcpWebAgentBridge) {
     resolve();
   } else {
@@ -432,6 +449,11 @@ await new Promise(resolve => {
 const instanceId = await window.__chromeMcpWebAgentBridge.registerInstance();
 console.log('实例ID:', instanceId);
 ```
+
+**注意**: 当 WebSocket 连接成功并注册实例后，扩展会在以下位置显示实例ID：
+
+- 浏览器控制台：以彩色日志形式显示当前实例ID
+- Popup 界面：在服务状态卡片中显示实例ID（可点击复制）
 
 #### 步骤 3: 使用实例ID
 
@@ -477,6 +499,7 @@ chrome.runtime.sendMessage({ type: NativeMessageType.PING_NATIVE });
 #### 实例注册
 
 **请求**:
+
 ```typescript
 {
   type: WebSocketMessageType.INSTANCE_REGISTER,
@@ -492,6 +515,7 @@ chrome.runtime.sendMessage({ type: NativeMessageType.PING_NATIVE });
 ```
 
 **响应**:
+
 ```typescript
 {
   type: WebSocketMessageType.INSTANCE_REGISTERED,
@@ -510,6 +534,7 @@ chrome.runtime.sendMessage({ type: NativeMessageType.PING_NATIVE });
 #### 工具调用
 
 **请求**:
+
 ```typescript
 {
   type: WebSocketMessageType.CALL_TOOL,
@@ -523,6 +548,7 @@ chrome.runtime.sendMessage({ type: NativeMessageType.PING_NATIVE });
 ```
 
 **响应**:
+
 ```typescript
 {
   type: WebSocketMessageType.CALL_TOOL_RESPONSE,
@@ -608,6 +634,7 @@ getConnection(instanceId: string): WebSocket | null
 #### 扩展端
 
 **之前**:
+
 ```typescript
 // 使用 chrome.runtime.connectNative
 const port = chrome.runtime.connectNative('com.chromemcp.nativehost');
@@ -615,6 +642,7 @@ port.postMessage({ type: 'start', payload: { port: 12306 } });
 ```
 
 **现在**:
+
 ```typescript
 // 使用 WebSocket 客户端
 import { connect, sendMessage } from './websocket-client';
@@ -622,26 +650,32 @@ import { connect, sendMessage } from './websocket-client';
 await connect();
 sendMessage({
   type: WebSocketMessageType.INSTANCE_REGISTER,
-  payload: { /* ... */ }
+  payload: {
+    /* ... */
+  },
 });
 ```
 
 #### 服务器端
 
 **之前**:
+
 ```typescript
 // 通过 Native Messaging Host 接收消息
 nativeMessagingHostInstance.sendRequestToExtensionAndWait(...)
 ```
 
 **现在**:
+
 ```typescript
 // 通过 WebSocket 发送消息
 const connection = instanceManager.getConnection(instanceId);
 websocketServer.sendMessage(connection, {
   type: WebSocketMessageType.CALL_TOOL,
   instanceId,
-  payload: { /* ... */ }
+  payload: {
+    /* ... */
+  },
 });
 ```
 
@@ -704,7 +738,7 @@ STORAGE_KEYS = {
   WEBSOCKET_AUTO_CONNECT_ENABLED: 'websocketAutoConnectEnabled',
   SERVER_STATUS: 'serverStatus',
   // ...
-}
+};
 ```
 
 ## 故障排查
@@ -716,16 +750,18 @@ STORAGE_KEYS = {
 **症状**: 扩展无法连接到服务器
 
 **排查步骤**:
+
 1. 检查服务器是否运行
 2. 检查 WebSocket URL 配置是否正确
 3. 检查防火墙设置
 4. 查看浏览器控制台错误信息
 
 **解决方案**:
+
 ```typescript
 // 手动设置WebSocket URL
 await chrome.storage.local.set({
-  websocketUrl: 'ws://localhost:12307/ws'
+  websocketUrl: 'ws://localhost:12307/ws',
 });
 
 // 手动触发连接
@@ -737,11 +773,14 @@ chrome.runtime.sendMessage({ type: NativeMessageType.CONNECT_NATIVE });
 **症状**: 无法获取实例ID
 
 **排查步骤**:
+
 1. 检查 WebSocket 连接是否建立
 2. 检查服务器日志
 3. 检查实例管理器状态
+4. 查看 Popup 界面中的实例ID显示（如果连接成功但未显示，可能是注册失败）
 
 **解决方案**:
+
 ```javascript
 // 检查连接状态
 const status = await window.__chromeMcpWebAgentBridge.checkConnection();
@@ -751,16 +790,24 @@ console.log('连接状态:', status);
 const instanceId = await window.__chromeMcpWebAgentBridge.registerInstance();
 ```
 
+**查看实例ID**:
+
+- 在 Popup 界面中，连接成功后会在状态卡片底部显示实例ID
+- 点击实例ID可以复制到剪贴板
+- 浏览器控制台也会显示彩色日志格式的实例ID
+
 #### 3. 消息路由失败
 
 **症状**: 工具调用无法到达扩展
 
 **排查步骤**:
+
 1. 检查实例ID是否正确
 2. 检查服务器端实例管理器
 3. 检查消息路由器日志
 
 **解决方案**:
+
 ```typescript
 // 服务器端：检查实例是否存在
 const instanceManager = server.getInstanceManager();
@@ -775,11 +822,13 @@ if (!connection) {
 **症状**: 连接断开后无法自动重连
 
 **排查步骤**:
+
 1. 检查自动连接设置
 2. 检查重连逻辑
 3. 查看网络连接状态
 
 **解决方案**:
+
 ```typescript
 // 检查自动连接设置
 const result = await chrome.storage.local.get(['websocketAutoConnectEnabled']);
@@ -794,6 +843,7 @@ chrome.runtime.sendMessage({ type: NativeMessageType.ENSURE_NATIVE });
 #### 启用详细日志
 
 在扩展端：
+
 ```typescript
 // websocket-client.ts
 const LOG_PREFIX = '[WebSocketClient]';
@@ -801,6 +851,7 @@ console.debug(`${LOG_PREFIX} 连接状态:`, ws?.readyState);
 ```
 
 在服务器端：
+
 ```typescript
 // websocket-server.ts
 const LOG_PREFIX = '[WebSocketServer]';
@@ -822,6 +873,264 @@ setInterval(() => {
     console.log('连接状态:', response);
   });
 }, 5000);
+```
+
+## Chrome 插件打包指南
+
+### 前置准备
+
+在打包之前，确保已完成以下步骤：
+
+1. **安装依赖**
+
+```bash
+# 在项目根目录执行
+pnpm install
+```
+
+2. **构建共享包**
+
+```bash
+# 构建共享类型定义
+pnpm run build:shared
+```
+
+3. **构建 WASM 模块（如需要）**
+
+```bash
+# 构建并复制 WASM 文件
+pnpm run build:wasm
+```
+
+### 打包方法
+
+#### 方法 1: 使用 WXT 直接打包（推荐）
+
+在 `app/chrome-extension` 目录下执行：
+
+```bash
+cd app/chrome-extension
+
+# 构建扩展
+pnpm run build
+
+# 打包成 zip 文件
+pnpm run zip
+```
+
+打包完成后，zip 文件会生成在 `app/chrome-extension/.output/chrome-mv3.zip`
+
+#### 方法 2: 使用根目录脚本
+
+在项目根目录执行：
+
+```bash
+# 构建扩展
+pnpm run build:extension
+
+# 然后进入扩展目录打包
+cd app/chrome-extension
+pnpm run zip
+```
+
+#### 方法 3: 手动打包
+
+如果需要自定义打包流程：
+
+```bash
+cd app/chrome-extension
+
+# 1. 构建扩展
+pnpm run build
+
+# 2. 进入构建输出目录
+cd .output/chrome-mv3
+
+# 3. 手动创建 zip 文件
+zip -r chrome-mcp-server-extension.zip .
+```
+
+### 打包配置
+
+#### 环境变量
+
+打包时可以通过环境变量配置：
+
+```bash
+# 设置 Chrome 扩展密钥（用于发布到 Chrome Web Store）
+export CHROME_EXTENSION_KEY="your-extension-key"
+
+# 设置生产模式
+export NODE_ENV=production
+
+# 然后执行打包
+pnpm run build && pnpm run zip
+```
+
+#### 构建选项
+
+在 `wxt.config.ts` 中可以配置：
+
+- **生产环境构建**: 自动启用 CSP 安全策略
+- **开发环境构建**: 禁用 CSP，启用 sourcemap
+- **压缩选项**: 默认不压缩（`minify: false`），可根据需要调整
+
+### 打包输出
+
+打包完成后，会生成以下文件：
+
+```
+app/chrome-extension/.output/
+├── chrome-mv3/              # 解压后的扩展目录
+│   ├── manifest.json
+│   ├── background.js
+│   ├── popup.html
+│   ├── inject-scripts/
+│   ├── workers/
+│   └── ...
+└── chrome-mv3.zip          # 打包后的 zip 文件
+```
+
+### 验证打包结果
+
+#### 1. 检查文件结构
+
+确保以下关键文件存在：
+
+- `manifest.json` - 扩展清单文件
+- `background.js` - 后台脚本
+- `popup.html` - 弹出窗口
+- `inject-scripts/` - 注入脚本目录
+- `workers/` - Web Worker 文件
+- `_locales/` - 国际化文件
+
+#### 2. 本地测试安装
+
+1. 解压 zip 文件或使用 `.output/chrome-mv3` 目录
+2. 打开 Chrome 浏览器
+3. 访问 `chrome://extensions/`
+4. 启用"开发者模式"
+5. 点击"加载已解压的扩展程序"
+6. 选择解压后的目录或 `.output/chrome-mv3` 目录
+7. 验证扩展功能是否正常
+
+#### 3. 检查清单文件
+
+验证 `manifest.json` 中的关键配置：
+
+- 版本号是否正确
+- 权限配置是否完整
+- `externally_connectable` 配置（用于 WebSocket Bridge）
+- `web_accessible_resources` 配置
+
+### 发布准备
+
+#### 1. 更新版本号
+
+在 `app/chrome-extension/package.json` 中更新版本号：
+
+```json
+{
+  "version": "1.0.0" // 更新为新的版本号
+}
+```
+
+#### 2. 生成发布包
+
+```bash
+cd app/chrome-extension
+
+# 生产环境构建
+NODE_ENV=production pnpm run build
+
+# 打包
+pnpm run zip
+```
+
+#### 3. 重命名发布包（可选）
+
+```bash
+# 使用版本号重命名
+mv .output/chrome-mv3.zip ../releases/chrome-extension/latest/chrome-mcp-server-v1.0.0.zip
+```
+
+### 常见问题
+
+#### 1. 打包失败：缺少依赖
+
+**解决方案**:
+
+```bash
+# 确保所有依赖已安装
+pnpm install
+
+# 重新构建共享包
+pnpm run build:shared
+```
+
+#### 2. 打包后扩展无法加载
+
+**排查步骤**:
+
+1. 检查 `manifest.json` 语法是否正确
+2. 查看浏览器控制台错误信息
+3. 确认所有必需文件都已包含在打包中
+4. 检查文件路径是否正确（相对路径）
+
+#### 3. WASM 文件缺失
+
+**解决方案**:
+
+```bash
+# 重新构建并复制 WASM 文件
+pnpm run build:wasm
+```
+
+#### 4. 国际化文件缺失
+
+**解决方案**:
+检查 `wxt.config.ts` 中的 `viteStaticCopy` 配置，确保 `_locales` 目录被正确复制。
+
+### 自动化打包脚本（可选）
+
+可以创建一个自动化打包脚本：
+
+```bash
+#!/bin/bash
+# scripts/build-extension.sh
+
+set -e
+
+echo "📦 开始打包 Chrome 扩展..."
+
+# 1. 安装依赖
+echo "📥 安装依赖..."
+pnpm install
+
+# 2. 构建共享包
+echo "🔨 构建共享包..."
+pnpm run build:shared
+
+# 3. 构建 WASM
+echo "🔨 构建 WASM 模块..."
+pnpm run build:wasm
+
+# 4. 构建扩展
+echo "🔨 构建扩展..."
+cd app/chrome-extension
+pnpm run build
+
+# 5. 打包
+echo "📦 打包扩展..."
+pnpm run zip
+
+# 6. 复制到 releases 目录
+echo "📋 复制到 releases 目录..."
+mkdir -p ../../releases/chrome-extension/latest
+cp .output/chrome-mv3.zip ../../releases/chrome-extension/latest/chrome-mcp-server-latest.zip
+
+echo "✅ 打包完成！"
+echo "📁 输出文件: releases/chrome-extension/latest/chrome-mcp-server-latest.zip"
 ```
 
 ## 总结

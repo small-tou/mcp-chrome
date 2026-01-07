@@ -31,6 +31,27 @@
                 {{ getMessage('lastUpdatedLabel') }}
                 {{ new Date(serverStatus.lastUpdated).toLocaleTimeString() }}
               </div>
+              <div v-if="currentInstanceId" class="instance-id-section">
+                <div class="instance-id-label">实例ID</div>
+                <div class="instance-id-value" :title="currentInstanceId" @click="copyInstanceId">
+                  {{ formatInstanceId(currentInstanceId) }}
+                  <svg
+                    class="copy-icon"
+                    viewBox="0 0 16 16"
+                    width="12"
+                    height="12"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path
+                      d="M5.5 4.5v-2a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-2m-5 3v-6a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1z"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </div>
+              </div>
             </div>
 
             <div v-if="showMcpConfig" class="mcp-config-section">
@@ -342,7 +363,7 @@ import {
   cleanupModelCache,
 } from '@/utils/semantic-similarity-engine';
 import { BACKGROUND_MESSAGE_TYPES } from '@/common/message-types';
-import { LINKS } from '@/common/constants';
+import { LINKS, STORAGE_KEYS, WEBSOCKET_CONFIG } from '@/common/constants';
 import { getMessage } from '@/utils/i18n';
 import { useAgentTheme, type AgentThemeId } from '../sidepanel/composables/useAgentTheme';
 
@@ -515,6 +536,7 @@ const runFlow = async (flowId: string) => {
 const nativeConnectionStatus = ref<'unknown' | 'connected' | 'disconnected'>('unknown');
 const isConnecting = ref(false);
 const nativeServerPort = ref<number>(12306);
+const currentInstanceId = ref<string | null>(null);
 
 const serverStatus = ref<{
   isRunning: boolean;
@@ -712,6 +734,33 @@ const getStatusText = () => {
     return getMessage('serviceNotConnectedStatus');
   } else {
     return getMessage('detectingStatus');
+  }
+};
+
+/**
+ * 格式化实例ID用于显示（显示前8位和后8位）
+ */
+const formatInstanceId = (instanceId: string): string => {
+  if (!instanceId || instanceId.length <= 16) {
+    return instanceId;
+  }
+  return `${instanceId.substring(0, 8)}...${instanceId.substring(instanceId.length - 8)}`;
+};
+
+/**
+ * 复制实例ID到剪贴板
+ */
+const copyInstanceId = async () => {
+  if (!currentInstanceId.value) return;
+
+  try {
+    await navigator.clipboard.writeText(currentInstanceId.value);
+    // 可以添加一个短暂的提示
+    const originalText = formatInstanceId(currentInstanceId.value);
+    // 临时显示完整ID作为反馈
+    console.log('实例ID已复制到剪贴板:', currentInstanceId.value);
+  } catch (error) {
+    console.error('复制实例ID失败:', error);
   }
 };
 
@@ -996,6 +1045,20 @@ const checkNativeConnection = async () => {
     // eslint-disable-next-line no-undef
     const response = await chrome.runtime.sendMessage({ type: 'ping_native' });
     nativeConnectionStatus.value = response?.connected ? 'connected' : 'disconnected';
+
+    // 如果连接成功，获取实例ID
+    if (response?.connected) {
+      try {
+        const instanceResponse = await chrome.runtime.sendMessage({
+          type: 'get_instance_id',
+        });
+        if (instanceResponse?.success && instanceResponse.instanceId) {
+          currentInstanceId.value = instanceResponse.instanceId;
+        }
+      } catch (error) {
+        console.warn('获取实例ID失败:', error);
+      }
+    }
   } catch (error) {
     console.error('检测 Native 连接状态失败:', error);
     nativeConnectionStatus.value = 'disconnected';
@@ -1014,6 +1077,18 @@ const checkServerStatus = async () => {
 
     if (response?.connected !== undefined) {
       nativeConnectionStatus.value = response.connected ? 'connected' : 'disconnected';
+    }
+
+    // 获取实例ID
+    try {
+      const instanceResponse = await chrome.runtime.sendMessage({
+        type: 'get_instance_id',
+      });
+      if (instanceResponse?.success && instanceResponse.instanceId) {
+        currentInstanceId.value = instanceResponse.instanceId;
+      }
+    } catch (error) {
+      // 忽略错误
     }
   } catch (error) {
     console.error('检测服务器状态失败:', error);
@@ -1182,9 +1257,16 @@ const saveVersionPreference = async (version: 'full' | 'quantized' | 'compressed
 
 const savePortPreference = async (port: number) => {
   try {
+    // 根据端口号生成 WebSocket URL
+    const websocketUrl = `ws://localhost:${port}/ws`;
+
+    // 同时保存端口号和 WebSocket URL，确保两者同步
     // eslint-disable-next-line no-undef
-    await chrome.storage.local.set({ nativeServerPort: port });
-    console.log(`端口偏好已保存: ${port}`);
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.NATIVE_SERVER_PORT]: port,
+      [STORAGE_KEYS.WEBSOCKET_URL]: websocketUrl,
+    });
+    console.log(`端口偏好已保存: ${port}, WebSocket URL: ${websocketUrl}`);
   } catch (error) {
     console.error('保存端口偏好失败:', error);
   }
@@ -1193,10 +1275,10 @@ const savePortPreference = async (port: number) => {
 const loadPortPreference = async () => {
   try {
     // eslint-disable-next-line no-undef
-    const result = await chrome.storage.local.get(['nativeServerPort']);
-    if (result.nativeServerPort) {
-      nativeServerPort.value = result.nativeServerPort;
-      console.log(`端口偏好已加载: ${result.nativeServerPort}`);
+    const result = await chrome.storage.local.get([STORAGE_KEYS.NATIVE_SERVER_PORT]);
+    if (result[STORAGE_KEYS.NATIVE_SERVER_PORT]) {
+      nativeServerPort.value = result[STORAGE_KEYS.NATIVE_SERVER_PORT];
+      console.log(`端口偏好已加载: ${result[STORAGE_KEYS.NATIVE_SERVER_PORT]}`);
     }
   } catch (error) {
     console.error('加载端口偏好失败:', error);
@@ -1496,11 +1578,35 @@ const switchModel = async (newModel: ModelPreset) => {
 
 const setupServerStatusListener = () => {
   // eslint-disable-next-line no-undef
-  const onMessage = (message: { type?: string; payload?: unknown }) => {
+  const onMessage = (message: { type?: string; payload?: unknown; instanceId?: string }) => {
     // Server status changes
     if (message.type === BACKGROUND_MESSAGE_TYPES.SERVER_STATUS_CHANGED && message.payload) {
       serverStatus.value = message.payload as any;
       console.log('Server status updated:', message.payload);
+    }
+    // Instance ID changed
+    if (message.type === 'INSTANCE_ID_CHANGED' && message.instanceId) {
+      currentInstanceId.value = message.instanceId;
+      console.log('实例ID已更新:', message.instanceId);
+    }
+    // WebSocket connection status changed - try to get instance ID when connected
+    if (message.type === BACKGROUND_MESSAGE_TYPES.WEBSOCKET_STATUS_CHANGED && message.payload) {
+      const payload = message.payload as { connected?: boolean };
+      if (payload.connected) {
+        // 延迟一下，确保实例已注册
+        setTimeout(() => {
+          chrome.runtime
+            .sendMessage({ type: 'get_instance_id' })
+            .then((instanceResponse: any) => {
+              if (instanceResponse?.success && instanceResponse.instanceId) {
+                currentInstanceId.value = instanceResponse.instanceId;
+              }
+            })
+            .catch((error) => {
+              console.warn('获取实例ID失败:', error);
+            });
+        }, 500);
+      }
     }
     // Flows changed - refresh list (IndexedDB-based notification)
     if (message.type === BACKGROUND_MESSAGE_TYPES.RR_FLOWS_CHANGED) {
@@ -2000,6 +2106,51 @@ onUnmounted(() => {
   font-size: 12px;
   color: #9ca3af;
   margin-top: 4px;
+}
+
+.instance-id-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.instance-id-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+
+.instance-id-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  color: #3b82f6;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  word-break: break-all;
+}
+
+.instance-id-value:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.copy-icon {
+  flex-shrink: 0;
+  color: #64748b;
+  opacity: 0.7;
+}
+
+.instance-id-value:hover .copy-icon {
+  opacity: 1;
+  color: #3b82f6;
 }
 
 .mcp-config-section {
